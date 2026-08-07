@@ -52,6 +52,46 @@ committed, reason = kernel.commit_belief_from_proposal(proposal.id, trace)
 print(committed, reason)
 ```
 
+### Pluggable belief validation
+
+The default `EvidenceValidator` checks that dependent percepts exist and are
+not stale or conflicted. Applications may add stricter synchronous validators
+without adding a model or domain dependency to Alethic itself:
+
+```python
+from typing import Any
+
+from alethic import EvidenceValidator, Kernel, ValidationResult
+
+
+class EntailmentValidator:
+    validator_id = "semantic_entailment"
+
+    def validate_belief_commit(
+        self,
+        belief_payload: dict[str, Any],
+        percepts: dict[str, Any],
+    ) -> ValidationResult:
+        # Call a deterministic, NLI, retrieval, or domain-specific verifier.
+        entailed = verify_claim(belief_payload, percepts)
+        if not entailed:
+            return ValidationResult(
+                False,
+                "INSUFFICIENT_EVIDENCE",
+                "The cited evidence does not entail the proposed belief",
+            )
+        return ValidationResult(True, "ENTAILED", "The claim is supported")
+
+
+kernel = Kernel(
+    belief_validators=[EvidenceValidator(), EntailmentValidator()],
+)
+```
+
+Validators run in order and short-circuit on the first rejection. Exceptions
+and invalid return values fail closed as `VALIDATOR_ERROR`. Successful and
+rejected results are recorded in validation evidence artifacts.
+
 Every worker can propose. Only the kernel can commit. State lives in seven
 semantic slots: percepts, beliefs, constraints, plans, evidence, predictions,
 and actions.

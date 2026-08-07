@@ -1,14 +1,14 @@
 from __future__ import annotations
 import math
 import threading
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import time
 
 from .schema import Record, Provenance, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .permissions import PERMISSIONS, Role
-from .validators import EvidenceValidator, SymbolicValidator
+from .validators import BeliefValidator, EvidenceValidator, SymbolicValidator, ValidationResult
 
 def _rid(slot: str, n: int, trace_id: str) -> str:
     return f"{slot}:{trace_id}:{n}"
@@ -21,21 +21,89 @@ _MAX_ID_PROBES = 10_000
 class Kernel:
     def __init__(self, min_confidence: float = 0.5,
                  conflict_confidence_threshold: float = 0.7,
-                 store: Optional[StoreProtocol] = None) -> None:
+                 store: Optional[StoreProtocol] = None,
+                 *,
+                 belief_validators: Optional[Sequence[BeliefValidator]] = None) -> None:
         self.store: StoreProtocol = store if store is not None else MemoryStore()
         self._counters: Dict[str, int] = {}
         self._counter_lock = threading.Lock()
         self._commit_lock = threading.Lock()
-        self.evidence_validator = EvidenceValidator()
+        self._belief_validators = self._prepare_belief_validators(belief_validators)
         self.symbolic_validator = SymbolicValidator()
         self.min_confidence = min_confidence
         self.conflict_confidence_threshold = conflict_confidence_threshold
+
+    @staticmethod
+    def _prepare_belief_validators(
+        validators: Optional[Sequence[BeliefValidator]],
+    ) -> Tuple[BeliefValidator, ...]:
+        configured = list(validators) if validators is not None else [EvidenceValidator()]
+        if not configured:
+            raise ValueError("belief_validators must contain at least one validator")
+        seen: set[str] = set()
+        for validator in configured:
+            validator_id = getattr(validator, "validator_id", None)
+            validate = getattr(validator, "validate_belief_commit", None)
+            if not isinstance(validator_id, str) or not validator_id.strip():
+                raise TypeError("each belief validator must define a non-empty validator_id")
+            if not callable(validate):
+                raise TypeError(
+                    f"belief validator {validator_id!r} must define validate_belief_commit()"
+                )
+            if validator_id in seen:
+                raise ValueError(f"duplicate belief validator id: {validator_id!r}")
+            seen.add(validator_id)
+        return tuple(configured)
+
+    @property
+    def belief_validators(self) -> Tuple[BeliefValidator, ...]:
+        """The immutable ordered chain applied to every belief proposal."""
+        return self._belief_validators
+
+    @property
+    def evidence_validator(self) -> BeliefValidator:
+        """Compatibility alias for the first configured belief validator."""
+        return self._belief_validators[0]
+
+    @evidence_validator.setter
+    def evidence_validator(self, validator: BeliefValidator) -> None:
+        """Replace the first validator while retaining the remainder of the chain."""
+        self._belief_validators = self._prepare_belief_validators(
+            [validator, *self._belief_validators[1:]]
+        )
 
     def _next_id(self, slot: str, trace_id: str) -> str:
         key = f"{slot}:{trace_id}"
         with self._counter_lock:
             self._counters[key] = self._counters.get(key, 0) + 1
             return _rid(slot, self._counters[key], trace_id)
+
+    def _reject_belief_proposal(
+        self,
+        proposal: Record,
+        trace_id: str,
+        code: str,
+        detail: str,
+        validator_results: List[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        """Atomically record a failed gate and invalidate its proposal."""
+        with self.store.transaction():
+            self.write(
+                "evidence_validator",
+                "evidence",
+                "COMMIT",
+                f"validation_{proposal.kind}",
+                {
+                    "belief": proposal.kind,
+                    "proposal_id": proposal.id,
+                    "result": "fail",
+                    "code": code,
+                    "validators": validator_results,
+                },
+                trace_id,
+            )
+            self.store.invalidate(proposal.id, detail)
+        return False, code
 
 
     def write(self, role: Role, slot: Slot, mode: WriteMode, kind: str, payload: Dict[str, Any],
@@ -110,22 +178,72 @@ class Kernel:
                 return False, "INVALID_PROPOSAL"
 
             view = self.current_view(trace_id)
-            res = self.evidence_validator.validate_belief_commit(prop.payload, view["percepts"])
+            validator_results: List[Dict[str, Any]] = []
+            for validator in self._belief_validators:
+                try:
+                    res = validator.validate_belief_commit(prop.payload, view["percepts"])
+                except Exception as exc:
+                    detail = (
+                        f"Belief validator {validator.validator_id!r} failed: "
+                        f"{type(exc).__name__}"
+                    )
+                    validator_results.append({
+                        "validator_id": validator.validator_id,
+                        "code": "VALIDATOR_ERROR",
+                        "detail": detail,
+                    })
+                    return self._reject_belief_proposal(
+                        prop, trace_id, "VALIDATOR_ERROR", detail, validator_results
+                    )
+                if not isinstance(res, ValidationResult):
+                    detail = (
+                        f"Belief validator {validator.validator_id!r} returned "
+                        f"{type(res).__name__}, expected ValidationResult"
+                    )
+                    validator_results.append({
+                        "validator_id": validator.validator_id,
+                        "code": "VALIDATOR_ERROR",
+                        "detail": detail,
+                    })
+                    return self._reject_belief_proposal(
+                        prop, trace_id, "VALIDATOR_ERROR", detail, validator_results
+                    )
 
-            if not res.ok:
-                # conflict arbitration: high-confidence source overrides conflict
-                if res.code == "CONFLICTING_EVIDENCE":
-                    dep_key = res.context.get("percept_key")
-                    dep_rec = self.store.find_active_by_kind("percepts", dep_key, trace_id) if dep_key else None
-                    if (dep_rec and dep_rec.prov.confidence is not None
-                            and dep_rec.prov.confidence >= self.conflict_confidence_threshold):
-                        pass  # arbitrated — proceed
-                    else:
-                        self.store.invalidate(proposal_id, res.detail)
-                        return False, "UNRESOLVED_CONFLICT"
-                else:
-                    self.store.invalidate(proposal_id, res.detail)
-                    return False, res.code
+                result_record: Dict[str, Any] = {
+                    "validator_id": validator.validator_id,
+                    "code": res.code,
+                    "detail": res.detail,
+                }
+                if res.context:
+                    result_record["context"] = res.context
+
+                if not res.ok:
+                    # conflict arbitration: high-confidence source overrides conflict
+                    if res.code == "CONFLICTING_EVIDENCE":
+                        dep_key = res.context.get("percept_key")
+                        dep_rec = self.store.find_active_by_kind(
+                            "percepts", dep_key, trace_id
+                        ) if dep_key else None
+                        if (dep_rec and dep_rec.prov.confidence is not None
+                                and dep_rec.prov.confidence
+                                >= self.conflict_confidence_threshold):
+                            result_record["code"] = "CONFLICT_ARBITRATED"
+                            validator_results.append(result_record)
+                            continue
+                        result_record["code"] = "UNRESOLVED_CONFLICT"
+                        validator_results.append(result_record)
+                        return self._reject_belief_proposal(
+                            prop,
+                            trace_id,
+                            "UNRESOLVED_CONFLICT",
+                            res.detail,
+                            validator_results,
+                        )
+                    validator_results.append(result_record)
+                    return self._reject_belief_proposal(
+                        prop, trace_id, res.code, res.detail, validator_results
+                    )
+                validator_results.append(result_record)
 
             # confidence gate on dependent percepts
             for dep_kind in prop.payload.get("depends_on", []):
@@ -135,8 +253,20 @@ class Kernel:
                     # An unknown confidence is exactly what this gate is for, so
                     # NaN must fail it rather than slip through `conf < min`.
                     if math.isnan(conf) or conf < self.min_confidence:
-                        self.store.invalidate(proposal_id, f"Low confidence on percept: {dep_kind}")
-                        return False, "LOW_CONFIDENCE"
+                        detail = f"Low confidence on percept: {dep_kind}"
+                        validator_results.append({
+                            "validator_id": "percept_confidence",
+                            "code": "LOW_CONFIDENCE",
+                            "detail": detail,
+                            "context": {"percept_key": dep_kind},
+                        })
+                        return self._reject_belief_proposal(
+                            prop,
+                            trace_id,
+                            "LOW_CONFIDENCE",
+                            detail,
+                            validator_results,
+                        )
 
             # record evidence artifact
             checks = ["existence", "staleness", "conflict"]
@@ -152,7 +282,12 @@ class Kernel:
                 ev_rec = self.write(
                     "evidence_validator", "evidence", "COMMIT",
                     f"validation_{prop.kind}",
-                    {"belief": prop.kind, "result": "pass", "checks": checks},
+                    {
+                        "belief": prop.kind,
+                        "result": "pass",
+                        "checks": checks,
+                        "validators": validator_results,
+                    },
                     trace_id,
                 )
                 self.store.invalidate(proposal_id, "SUPERSEDED_BY_COMMIT")

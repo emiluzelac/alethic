@@ -31,7 +31,8 @@ Records are written in one of two modes:
 The lifecycle of a governed decision:
 
 1. A planner **proposes** a belief (e.g., "refund_due")
-2. The kernel **validates** the proposal (evidence checks, confidence gates, conflict arbitration)
+2. The kernel **validates** the proposal (the configured belief-validator
+   chain, confidence gates, and conflict arbitration)
 3. On success: the proposal is **invalidated** with reason `SUPERSEDED_BY_COMMIT` and a new committed record is written
 4. On failure: the proposal is **invalidated** with a specific reason code (e.g., `STALE_EVIDENCE`)
 
@@ -43,15 +44,33 @@ This two-phase protocol means nothing becomes "true" on the blackboard without p
 
 When `commit_belief_from_proposal()` is called:
 
-1. **Existence check** — Every percept in `depends_on` must exist on the blackboard
-2. **Staleness check** — Dependent percepts must not be marked `stale: true`
-3. **Conflict check** — Dependent percepts must not be marked `conflict: true`
-4. **Conflict arbitration** — If a conflict is found but the percept has confidence >= `conflict_confidence_threshold` (default 0.7), the conflict is arbitrated and the belief proceeds
-5. **Confidence gate** — Dependent percepts must have confidence >= `min_confidence` (default 0.5)
-6. **Evidence recording** — On success, an evidence artifact is committed documenting which checks passed
-7. **Commit** — The proposal is superseded and a committed belief record is written
+1. **Validator chain** — Every configured `BeliefValidator` runs in order. The
+   default `EvidenceValidator` checks existence, staleness, and conflicts for
+   every percept in `depends_on`. Applications can append semantic,
+   deterministic, retrieval, or policy validators.
+2. **Short-circuit** — The first rejection atomically records a failed
+   validation evidence artifact, invalidates the proposal, and returns its
+   result code. Exceptions and malformed results fail closed as
+   `VALIDATOR_ERROR` through the same audited path.
+3. **Conflict arbitration** — If the structural validator finds a conflict but
+   the percept has confidence >= `conflict_confidence_threshold` (default 0.7),
+   that result is recorded as `CONFLICT_ARBITRATED` and the remaining validators
+   still run.
+4. **Confidence gate** — Dependent percepts must have confidence >=
+   `min_confidence` (default 0.5).
+5. **Evidence recording** — Success and rejection artifacts record the ordered
+   validator IDs, result codes, details, and optional context.
+6. **Commit** — The proposal is superseded and a committed belief record is
+   written.
 
-Possible return codes: `COMMITTED`, `INVALID_PROPOSAL`, `MISSING_EVIDENCE`, `STALE_EVIDENCE`, `UNRESOLVED_CONFLICT`, `LOW_CONFIDENCE`
+Possible built-in return codes: `COMMITTED`, `INVALID_PROPOSAL`,
+`MISSING_EVIDENCE`, `STALE_EVIDENCE`, `UNRESOLVED_CONFLICT`, `LOW_CONFIDENCE`,
+and `VALIDATOR_ERROR`. Custom validator rejection codes pass through unchanged.
+
+The kernel does not ship a semantic model. An entailment validator is an
+application integration implementing the `BeliefValidator` protocol; this
+keeps Alethic model- and domain-neutral while making the additional gate part
+of the enforced commit path.
 
 ### Plan Validation
 

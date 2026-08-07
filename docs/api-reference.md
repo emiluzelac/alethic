@@ -13,6 +13,8 @@ Kernel(
     min_confidence: float = 0.5,
     conflict_confidence_threshold: float = 0.7,
     store: Optional[StoreProtocol] = None,
+    *,
+    belief_validators: Optional[Sequence[BeliefValidator]] = None,
 )
 ```
 
@@ -21,6 +23,12 @@ Kernel(
 | `min_confidence` | `float` | `0.5` | Minimum confidence on dependent percepts for belief commitment |
 | `conflict_confidence_threshold` | `float` | `0.7` | Confidence threshold above which conflicts are arbitrated |
 | `store` | `Optional[StoreProtocol]` | `None` | Backing store; defaults to `MemoryStore()` if not provided |
+| `belief_validators` | `Optional[Sequence[BeliefValidator]]` | `None` | Ordered fail-closed chain; defaults to one `EvidenceValidator()` |
+
+`belief_validators` must be non-empty and validator IDs must be unique. The
+kernel copies the sequence into an immutable tuple. The
+`kernel.evidence_validator` compatibility property gets or replaces the first
+validator without removing the rest of the chain.
 
 ### Methods
 
@@ -85,7 +93,9 @@ commit_belief_from_proposal(
 ) -> Tuple[bool, str]
 ```
 
-Validate and commit a belief proposal. Runs evidence validation, confidence checks, and conflict arbitration.
+Validate and commit a belief proposal. Runs the ordered belief-validator chain,
+confidence checks, and conflict arbitration. The first validator rejection
+short-circuits the chain and its code is returned unchanged.
 
 | Return | Description |
 |--------|-------------|
@@ -95,6 +105,8 @@ Validate and commit a belief proposal. Runs evidence validation, confidence chec
 | `(False, "STALE_EVIDENCE")` | Dependent percept is stale |
 | `(False, "UNRESOLVED_CONFLICT")` | Dependent percept has conflict, below arbitration threshold |
 | `(False, "LOW_CONFIDENCE")` | Dependent percept confidence below `min_confidence` |
+| `(False, "VALIDATOR_ERROR")` | A validator raised an exception or returned something other than `ValidationResult` |
+| `(False, "<CUSTOM_CODE>")` | A custom validator rejected the proposal; its code passes through unchanged |
 
 #### `validate_plan()`
 
@@ -250,6 +262,29 @@ Implements all `StoreProtocol` methods plus:
 
 ## Validators
 
+### `BeliefValidator`
+
+`alethic.validators.BeliefValidator` — Structural protocol for a synchronous
+belief-commitment gate.
+
+```python
+class BeliefValidator(Protocol):
+    validator_id: str
+
+    def validate_belief_commit(
+        self,
+        belief_payload: Dict[str, Any],
+        percepts: Dict[str, Any],
+    ) -> ValidationResult: ...
+```
+
+`validator_id` must be non-empty and unique within a kernel. Validators run in
+configuration order and should return an affirmative `ValidationResult` only
+when their own check passes. Exceptions and malformed return values fail
+closed. Successful and rejected results—including optional `context` such as
+supporting evidence spans or verifier votes—are written into validation
+evidence artifacts.
+
 ### `ValidationResult`
 
 `alethic.validators.ValidationResult` — Result of a validation check.
@@ -265,7 +300,9 @@ class ValidationResult:
 
 ### `EvidenceValidator`
 
-`alethic.validators.EvidenceValidator` — Checks whether beliefs are supported by evidence.
+`alethic.validators.EvidenceValidator` — The default structural validator. It
+checks the presence and condition of cited percepts; it does not determine
+whether natural-language evidence semantically entails a claim.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|

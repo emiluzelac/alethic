@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-07
+
+### Added
+
+- Added the typed `BeliefValidator` protocol and the ordered
+  `Kernel(..., belief_validators=[...])` validation chain.
+- Added fail-closed `VALIDATOR_ERROR` handling for validator exceptions and
+  malformed return values.
+- Added per-validator result codes, details, and context to successful and
+  rejected belief-validation evidence artifacts.
+- Exported `BeliefValidator` and `ValidationResult` from the public `alethic`
+  namespace.
+
+### Changed
+
+- `EvidenceValidator` is now the default first member of the belief-validator
+  chain and identifies itself as `structural_evidence`.
+- The existing `kernel.evidence_validator` attribute remains a compatibility
+  property that replaces only the first validator in the configured chain.
+
 ## [0.3.0] - 2026-07-18
 
 ### Changed

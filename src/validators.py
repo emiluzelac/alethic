@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, Protocol
 
 @dataclass
 class ValidationResult:
@@ -9,7 +9,27 @@ class ValidationResult:
     detail: str
     context: Dict[str, Any] = field(default_factory=dict)
 
+
+class BeliefValidator(Protocol):
+    """A synchronous gate that must pass before a belief may be committed.
+
+    Implementations remain outside the kernel so they may use deterministic
+    rules, retrieval, an entailment model, or another domain-specific policy.
+    ``validator_id`` is recorded in successful validation evidence.
+    """
+
+    validator_id: str
+
+    def validate_belief_commit(
+        self,
+        belief_payload: Dict[str, Any],
+        percepts: Dict[str, Any],
+    ) -> ValidationResult:
+        ...
+
 class EvidenceValidator:
+    validator_id = "structural_evidence"
+
     def validate_belief_commit(self, belief_payload: Dict[str, Any], percepts: Dict[str, Any]) -> ValidationResult:
         depends = belief_payload.get("depends_on", [])
         for k in depends:
