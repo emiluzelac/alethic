@@ -69,3 +69,20 @@ def test_every_created_store_is_closed_even_when_conformance_fails() -> None:
         f"expected every created store to be closed, but only "
         f"{len(closed_ids)} of {len(created)} instances were"
     )
+
+
+def test_a_store_that_returns_list_slot_in_the_wrong_order_is_caught() -> None:
+    """The suite publishes insertion-ordered `list_slot` as a contract, so it
+    has to be able to fail a store that supplies some other order.
+
+    `Kernel.current_view()` folds the sequence into a dict keyed by `kind`, so
+    a later COMMIT supersedes an earlier one only if it arrives later. Kind
+    order is the specific wrong answer a SQL backend gives when the planner
+    picks an index keyed on `kind` -- which is legal for the shipped schema.
+    """
+    class KindOrdered(MemoryStore):
+        def list_slot(self, slot: Slot) -> List[Record]:
+            return sorted(super().list_slot(slot), key=lambda r: r.kind)
+
+    with pytest.raises(AssertionError, match="append order"):
+        store_conformance(KindOrdered)

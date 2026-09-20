@@ -37,6 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   oldest, and re-entrant `transaction()` — the exact place `MemoryStore` and
   `SqliteStore` once silently disagreed. Ships as `alethic/testing.py`.
 
+### Fixed
+
+- `SqliteStore.list_slot()` now orders by `rowid`, making the append order
+  `StoreProtocol` publishes a guarantee rather than a planner decision. Both
+  `idx_slot` and `idx_slot_kind_trace` can serve `WHERE slot=?` and the two
+  return rows in different orders, so which COMMIT superseded which in
+  `Kernel.current_view()` depended on which index SQLite happened to pick.
+  `list_persistent()` and `list_by_status()` are ordered the same way, for
+  the same reason: an append-only audit trail read back in an arbitrary order
+  is not an audit trail.
+- `alethic.testing.store_conformance()`'s append-order check now uses records
+  of differing `kind`. It previously appended three records sharing one kind,
+  the single shape where kind order and append order agree, so it asserted a
+  contract it could not fail a store for breaking.
+
 ### Changed
 
 - Validators are now handed deep copies of the payload and the percept,

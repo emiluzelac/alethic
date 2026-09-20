@@ -276,7 +276,7 @@ WriteMode = Literal["PROPOSE", "COMMIT"]
 |--------|-----------|-------------|
 | `append` | `(rec: Record) -> None` | Add a record to the store |
 | `get` | `(rec_id: str) -> Optional[Record]` | Retrieve by ID (checks TTL) |
-| `list_slot` | `(slot: Slot) -> List[Record]` | All records in a slot (checks TTL) |
+| `list_slot` | `(slot: Slot) -> List[Record]` | All records in a slot, in append order (checks TTL) |
 | `find_active_by_kind` | `(slot: Slot, kind: str, trace_id: str) -> Optional[Record]` | Find active record by kind+trace |
 | `invalidate` | `(rec_id: str, reason: str) -> None` | Mark record as INVALIDATED |
 | `transaction` | `() -> ContextManager[None]` | Make a validation-and-commit sequence atomic |
@@ -302,8 +302,8 @@ Implements all `StoreProtocol` methods plus:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `list_by_status` | `(status: str) -> List[Record]` | All records with given status |
-| `list_persistent` | `(slot: Optional[str] = None) -> List[Record]` | All persistent-scope records |
+| `list_by_status` | `(status: str) -> List[Record]` | All records with given status, in append order |
+| `list_persistent` | `(slot: Optional[str] = None) -> List[Record]` | All persistent-scope records, in append order |
 | `count_invalidated_by_reason` | `() -> Dict[str, int]` | `{reason: count}` for invalidated records |
 | `close` | `() -> None` | Close the database connection |
 

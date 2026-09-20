@@ -61,8 +61,14 @@ def store_conformance(store_factory: Callable[[], StoreProtocol]) -> None:
         # later COMMIT for the same kind must appear later in the sequence to
         # correctly supersede an earlier one, regardless of what ts_ms it
         # carries.
-        store.append(_rec("percepts:conf:3", "obs", ts_ms=3000))
-        store.append(_rec("percepts:conf:2", "obs", ts_ms=2000))
+        #
+        # The three records deliberately differ in `kind` ("obs", "zeta",
+        # "alpha") and in `ts_ms`, so append order matches neither. Records
+        # sharing one kind would make this assertion unfalsifiable against a
+        # store that returns kind order -- the wrong answer a SQL backend
+        # gives when its planner picks an index keyed on kind.
+        store.append(_rec("percepts:conf:3", "zeta", ts_ms=3000))
+        store.append(_rec("percepts:conf:2", "alpha", ts_ms=2000))
         ids = [r.id for r in store.list_slot("percepts")]
         expected = ["percepts:conf:1", "percepts:conf:3", "percepts:conf:2"]
         assert ids == expected, f"list_slot() returned {ids}, expected append order {expected}"
