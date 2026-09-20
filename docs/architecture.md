@@ -47,11 +47,17 @@ When `commit_belief_from_proposal()` is called:
 1. **Validator chain** — Every configured `BeliefValidator` runs in order. The
    default `EvidenceValidator` checks existence, staleness, and conflicts for
    every percept in `depends_on`. Applications can append semantic,
-   deterministic, retrieval, or policy validators.
+   deterministic, retrieval, or policy validators. Each validator receives a
+   `ValidationContext` (`store`, `trace_id`, `now_ms`) alongside the belief
+   payload and percepts, so a rule can consult history or the clock and not
+   just the dict it was handed — see [Writing a validator](https://github.com/emiluzelac/alethic/blob/main/docs/architecture.md#writing-a-validator).
 2. **Short-circuit** — The first rejection atomically records a failed
    validation evidence artifact, invalidates the proposal, and returns its
    result code. Exceptions and malformed results fail closed as
-   `VALIDATOR_ERROR` through the same audited path.
+   `VALIDATOR_ERROR` through the same audited path. This is deliberate: a
+   belief is a truth claim, and the first disqualifying reason settles it —
+   see [Action Commitment](https://github.com/emiluzelac/alethic/blob/main/docs/architecture.md#action-commitment) for why the action chain does
+   not do this.
 3. **Conflict arbitration** — If the structural validator finds a conflict but
    the percept has confidence >= `conflict_confidence_threshold` (default 0.7),
    that result is recorded as `CONFLICT_ARBITRATED` and the remaining validators
@@ -83,14 +89,40 @@ Possible return codes: `PLAN_FEASIBLE`, `INVALID_PLAN_PROPOSAL`, `PLAN_MISSING_B
 
 ### Action Commitment
 
-When `commit_action_from_proposal()` is called:
+When `decide_action()` is called (`commit_action_from_proposal()` is a thin
+two-tuple wrapper over it — `ok, code = decision.ok, decision.code`):
 
 1. **Prediction gate** (optional) — If `require_prediction=True`, a prediction must exist for the action type with non-negative `expected_outcome`
-2. **Belief validation** — Every belief in `requires_beliefs` must be committed and truthy
-3. **Constraint validation** — No constraint's `blocks_field` may match a truthy field on the action
+2. **Validator chain, run to completion** — Every configured `ActionValidator`
+   runs, in order, receiving the action payload, committed beliefs,
+   constraints, and a `ValidationContext`. The default `SymbolicValidator`
+   checks belief requirements and constraint blocks. **Unlike the belief
+   chain, a failing validator does not stop the chain** — every remaining
+   validator still runs, and every result lands in
+   `ActionDecision.results`. Exceptions and malformed results still fail
+   closed as `VALIDATOR_ERROR`, and the chain stops there, because a crashing
+   validator cannot be trusted to keep judging.
+3. **Reasons and concerns** — `ActionDecision.reasons` collects the `detail`
+   of every failing validator; `ActionDecision.concerns` collects the
+   `detail` of every *passing* validator that set `marginal=True` on its
+   result, whether or not the decision as a whole succeeded.
+   `ActionDecision.severity` is `"review"` if any failing validator set
+   `severity="review"` on its result, otherwise `"block"`.
 4. **Commit** — On success, the proposal is superseded and a committed action record is written
 
-Possible return codes: `COMMITTED`, `INVALID_ACTION_PROPOSAL`, `NO_PREDICTION`, `NEGATIVE_PREDICTION`, `NO_COMMITTED_BELIEF`, `BELIEF_NOT_SATISFIED`, `{CONSTRAINT}_BLOCKED`
+This is the opposite of belief commitment's short-circuit, and deliberately
+so: a belief is a truth claim, where the first disqualifying reason settles
+it, so running the rest of the chain against evidence that already failed
+would add nothing. An action decision is handed to a person — directly, or
+through `severity="review"` — who needs every reason the action was refused
+and every gate that passed only narrowly, not just whichever gate happened to
+run first.
+
+Possible `ActionDecision.code` values: `COMMITTED`, `INVALID_ACTION_PROPOSAL`,
+`NO_PREDICTION`, `NEGATIVE_PREDICTION`, `VALIDATOR_ERROR`, plus whatever the
+first failing validator returns (`NO_COMMITTED_BELIEF`,
+`BELIEF_NOT_SATISFIED`, `{CONSTRAINT}_BLOCKED` from `SymbolicValidator`, or a
+custom validator's own code).
 
 ### Prediction Commitment
 
@@ -100,6 +132,87 @@ When `commit_prediction()` is called:
 2. **Commit** — The proposal is superseded and a committed prediction record is written
 
 Possible return codes: `COMMITTED`, `INVALID_PREDICTION_PROPOSAL`, `PREDICTION_MISSING_BELIEF`
+
+## Writing a validator
+
+A `BeliefValidator` or `ActionValidator` is any object with a `validator_id`
+string and the matching `validate_belief_commit` / `validate_action` method —
+there is no base class to subclass, only the protocol to satisfy. What makes
+this worth doing rather than hand-rolling a check inline is
+`ValidationContext`: it hands the validator the kernel's own `store`,
+`trace_id`, and `now_ms`, so a rule can depend on history or the clock
+instead of only the payload it was handed.
+
+A cooldown is exactly the rule that was impossible to write before
+`ValidationContext` existed — refusing a second action of the same kind
+inside a time window requires seeing *earlier* episodes and knowing what time
+it is, and a validator that only received the action's own payload had
+neither. Here it is as an `ActionValidator`:
+
+```python
+from alethic import ValidationContext, ValidationResult
+
+
+class CooldownValidator:
+    """Refuse a second contact of the same kind inside a window."""
+
+    validator_id = "cooldown"
+
+    def __init__(self, window_ms: int) -> None:
+        self.window_ms = window_ms
+
+    def validate_action(self, action, committed_beliefs, constraints,
+                        context: ValidationContext) -> ValidationResult:
+        kind = action.get("type", "")
+        # find_active_by_kind is scoped to one trace, and a cooldown must see
+        # earlier episodes, so scan the slot and filter. O(n) on the shipped
+        # stores; a backend built for this can index on (kind, ts_ms).
+        previous = [
+            r for r in context.store.list_slot("actions")
+            if r.kind == kind
+            and r.mode == "COMMIT"
+            and r.prov.trace_id != context.trace_id
+        ]
+        if not previous:
+            return ValidationResult(True, "OK", "no previous contact")
+        last_ms = max(r.prov.ts_ms for r in previous)
+        age_ms = context.now_ms - last_ms
+        if age_ms < self.window_ms:
+            return ValidationResult(
+                False, "COOLDOWN_ACTIVE",
+                f"last contact {age_ms}ms ago, window is {self.window_ms}ms",
+                severity="review",
+            )
+        return ValidationResult(True, "OK", "outside the cooldown window")
+```
+
+Wire it in ahead of, or alongside, `SymbolicValidator`:
+
+```python
+kernel = Kernel(
+    action_validators=[SymbolicValidator(), CooldownValidator(window_ms=3_600_000)],
+)
+```
+
+A few things about this example that generalize to any validator:
+
+- `context.store.list_slot(...)` is a read; validators should never write to
+  the store. Only the kernel writes evidence and commits records.
+- `find_active_by_kind(slot, kind, trace_id)` only looks inside one
+  `trace_id`, because it answers "what's active in *this* episode." A
+  cooldown's whole point is to see across episodes, so this example scans
+  `list_slot("actions")` — every action ever committed, across every trace —
+  and filters by `kind`, `mode == "COMMIT"`, and a different `trace_id`
+  itself. This is O(n) on both shipped stores; a backend built to answer this
+  question at scale would index on `(kind, ts_ms)` instead.
+- `severity="review"` on the refusal means this gate does not want to hard
+  block the action — it wants a person to decide. In `decide_action()`, that
+  bubbles up to `ActionDecision.severity` only if this is a *failing* result;
+  a passing-but-close-to-the-line result belongs in `marginal=True` instead
+  (surfaced through `ActionDecision.concerns`), not `severity`.
+- `context.now_ms` is one clock reading shared by the whole validator chain
+  for this call, not a fresh `time.time()` per validator, so two validators
+  in the same chain agree on what "now" means.
 
 ## Role-Based Access Control
 
@@ -160,6 +273,15 @@ from alethic.sqlite_store import SqliteStore
 store = SqliteStore("blackboard.db")
 kernel = Kernel(store=store)
 ```
+
+A third store must agree with `MemoryStore` and `SqliteStore` on the subtle
+parts of `StoreProtocol` — lazy TTL expiry, insertion-ordered `list_slot`,
+walking past an expired candidate in `find_active_by_kind` rather than
+judging only the oldest, and re-entrant `transaction()`. `alethic.testing.store_conformance()`
+checks exactly those, against a factory for the new store; see the
+[API reference](https://github.com/emiluzelac/alethic/blob/main/docs/api-reference.md#alethictesting). This is not hypothetical —
+those two shipped stores once silently disagreed here, with `MemoryStore`
+overwriting a duplicate id that `SqliteStore` correctly refused.
 
 ## Session and Scope
 

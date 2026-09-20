@@ -17,13 +17,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected belief-validation evidence artifacts.
 - Exported `BeliefValidator` and `ValidationResult` from the public `alethic`
   namespace.
+- Added `ValidationContext` (`store`, `trace_id`, `now_ms`), passed to every
+  belief and action validator so a rule can consult history or the clock —
+  the case a cooldown or a freshness check needs and could not express
+  before. Exported from `alethic`.
+- Added the typed `ActionValidator` protocol and the ordered
+  `Kernel(..., action_validators=[...])` validation chain, mirroring
+  `belief_validators`. `SymbolicValidator` is the default first member.
+  Exported from `alethic`.
+- Added `Kernel.decide_action()`, which runs the *whole* action-validator
+  chain to completion and returns an `ActionDecision` carrying every
+  validator's `ValidationResult`, every failing gate's reason in `reasons`,
+  every passing-but-`marginal` gate's detail in `concerns`, and an overall
+  `severity`. Exported `ActionDecision` from `alethic`.
+- Added `alethic.testing.store_conformance()`, a public conformance suite for
+  `StoreProtocol` implementations. It asserts the subtle parts of the
+  contract — append-only ids, insertion-ordered `list_slot`, walking past an
+  expired candidate in `find_active_by_kind` rather than judging only the
+  oldest, and re-entrant `transaction()` — the exact place `MemoryStore` and
+  `SqliteStore` once silently disagreed. Ships as `alethic/testing.py`.
 
 ### Changed
 
+- **Breaking:** `BeliefValidator.validate_belief_commit()` now takes a third
+  positional argument, `context: ValidationContext`. Migration: add the
+  parameter to every custom validator's method signature; the kernel now
+  always passes it.
+- **Breaking:** `ActionValidator.validate_action()` (formerly documented
+  informally as `SymbolicValidator`'s shape) now takes a fourth positional
+  argument, `context: ValidationContext`. Migration: add the parameter to
+  every custom validator's method signature.
+- `ValidationResult` gained two fields, `marginal: bool = False` and
+  `severity: Literal["block", "review"] = "block"`. Both are defaulted, so
+  existing `ValidationResult(...)` construction is unaffected. `severity` is
+  only meaningful when `ok=False`; `"review"` means the gate refuses but
+  wants a person to decide rather than a hard stop. `marginal=True` on a
+  passing result surfaces its detail as a `concern` even though the gate let
+  the proposal through.
+- `Kernel.commit_action_from_proposal()` is now a thin wrapper over
+  `decide_action()` — `ok, code = decide_action(...).ok, decide_action(...).code`
+  — kept only for the existing two-tuple call sites. No migration needed;
+  its signature and return type are unchanged.
 - `EvidenceValidator` is now the default first member of the belief-validator
   chain and identifies itself as `structural_evidence`.
 - The existing `kernel.evidence_validator` attribute remains a compatibility
   property that replaces only the first validator in the configured chain.
+  `kernel.symbolic_validator` is the equivalent compatibility property for
+  the action-validator chain, added alongside `action_validators`.
+
+### Why the action chain runs to completion and the belief chain does not
+
+`commit_belief_from_proposal()` still stops at the first validator that
+rejects. `decide_action()` deliberately does not: it runs every configured
+`ActionValidator` and reports all of it. A belief is a truth claim — the
+first disqualifying reason is enough to settle whether it may enter state,
+and running further checks against evidence that has already failed adds
+nothing. An action decision is different: it is handed to a person (directly,
+or through `severity="review"`), and that person needs every reason the
+action was refused and every gate that passed only narrowly, not just
+whichever gate happened to run first. This asymmetry is intentional and is
+not expected to converge — do not "fix" one chain to match the other.
 
 ## [0.3.0] - 2026-07-18
 

@@ -52,7 +52,7 @@ committed, reason = kernel.commit_belief_from_proposal(proposal.id, trace)
 print(committed, reason)
 ```
 
-### Pluggable belief validation
+### Pluggable validation
 
 The default `EvidenceValidator` checks that dependent percepts exist and are
 not stale or conflicted. Applications may add stricter synchronous validators
@@ -61,7 +61,7 @@ without adding a model or domain dependency to Alethic itself:
 ```python
 from typing import Any
 
-from alethic import EvidenceValidator, Kernel, ValidationResult
+from alethic import EvidenceValidator, Kernel, ValidationContext, ValidationResult
 
 
 class EntailmentValidator:
@@ -71,6 +71,7 @@ class EntailmentValidator:
         self,
         belief_payload: dict[str, Any],
         percepts: dict[str, Any],
+        context: ValidationContext,
     ) -> ValidationResult:
         # Call a deterministic, NLI, retrieval, or domain-specific verifier.
         entailed = verify_claim(belief_payload, percepts)
@@ -88,9 +89,22 @@ kernel = Kernel(
 )
 ```
 
-Validators run in order and short-circuit on the first rejection. Exceptions
+Validators run in order and short-circuit on the first rejection — a belief
+is a truth claim, so the first disqualifying reason settles it. Exceptions
 and invalid return values fail closed as `VALIDATOR_ERROR`. Successful and
-rejected results are recorded in validation evidence artifacts.
+rejected results are recorded in validation evidence artifacts. Every
+validator receives a `ValidationContext` (the kernel's `store`, `trace_id`,
+and `now_ms`), so a rule can depend on history or the clock, not just the
+payload it was handed.
+
+`Kernel(action_validators=[...])` is the same mechanism for actions, with one
+difference: the whole chain always runs to completion, even after a gate
+fails, because an action decision goes to a person who needs every reason it
+was refused rather than just the first one. See
+[Writing a validator](https://github.com/emiluzelac/alethic/blob/main/docs/architecture.md#writing-a-validator)
+for a complete example (a cooldown gate) and
+[`Kernel.decide_action()`](https://github.com/emiluzelac/alethic/blob/main/docs/api-reference.md#decide_action)
+for the full return shape.
 
 Every worker can propose. Only the kernel can commit. State lives in seven
 semantic slots: percepts, beliefs, constraints, plans, evidence, predictions,
@@ -148,14 +162,19 @@ src/
   kernel.py
   schema.py
   permissions.py
+  context.py
+  decision.py
   validators.py
+  store_protocol.py
   store.py
   sqlite_store.py
+  migrations.py
   worker.py
   orchestrator.py
   session.py
   sim_worker.py
   adaptive_worker.py
+  testing.py
 ```
 
 ## Development
