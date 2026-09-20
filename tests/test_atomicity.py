@@ -75,6 +75,49 @@ class TestCommitIsAtomic:
         assert view["evidence"]["validation_refund_due"]["result"] == "pass"
         assert kernel.store.get(prop.id).status == "INVALIDATED"
 
+    def test_failed_action_rejection_leaves_no_evidence_behind(self, kernel: Kernel) -> None:
+        """The same P0-4 invariant, now on the action-rejection path.
+
+        `_reject_action` writes an evidence artifact recording *why* an
+        action was refused, then invalidates the proposal, under one
+        transaction. If the evidence write survives a rejection that never
+        completed, the trail asserts a validation outcome for a proposal
+        that is still live and retryable -- the mirror image of the belief
+        case above.
+        """
+        trace = "t-atomic-action"
+        action = kernel.write("planner", "actions", "PROPOSE", "send",
+                              {"type": "send", "requires_beliefs": ["refund_due"]},
+                              trace)
+
+        real_write = kernel.write
+        calls = {"n": 0}
+
+        def exploding_write(role, slot, *args, **kwargs):
+            # let the rejection reach its evidence write, then blow up there
+            if slot == "evidence" and args and args[0] == "COMMIT":
+                calls["n"] += 1
+                raise RuntimeError("simulated failure mid-rejection")
+            return real_write(role, slot, *args, **kwargs)
+
+        kernel.write = exploding_write  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            kernel.decide_action(action.id, trace)
+        kernel.write = real_write  # type: ignore[method-assign]
+
+        assert calls["n"] == 1, "the rejection evidence write should have been attempted"
+
+        view = kernel.current_view(trace)
+        assert view["evidence"] == {}, (
+            "evidence artifact survived a rejection that never completed -- "
+            "the audit trail is asserting a validation outcome for nothing"
+        )
+        still = kernel.store.get(action.id)
+        assert still is not None and still.status == "ACTIVE", (
+            "proposal was invalidated by a rejection that failed, so it can "
+            "never be retried"
+        )
+
 
 CRASH_CHILD = '''
 import os, sys

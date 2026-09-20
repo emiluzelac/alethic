@@ -183,11 +183,20 @@ class Kernel:
                 trace_id,
             )
             self.store.invalidate(proposal.id, detail)
+        # `detail` is the reason this call was made -- for a gate that failed
+        # cleanly it already equals that gate's own result.detail and so is
+        # already in `reasons`; for a validator that raised or returned
+        # garbage, no result was appended for it, so `detail` is the *only*
+        # place that failure is recorded and must not be dropped just
+        # because an earlier gate in the same chain also failed.
+        reasons = tuple(r.detail for r in results if not r.ok)
+        if detail not in reasons:
+            reasons += (detail,)
         return ActionDecision(
             ok=False,
             code=code,
             results=tuple(results),
-            reasons=tuple(r.detail for r in results if not r.ok) or (detail,),
+            reasons=reasons,
             concerns=concerns,
             severity=severity,
         )
