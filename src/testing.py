@@ -69,15 +69,17 @@ def store_conformance(store_factory: Callable[[], StoreProtocol]) -> None:
 
         # 4. an expired candidate must not hide a live one
         store2 = store_factory()
-        store2.append(_rec("percepts:t:1", "reading", trace_id="t", ttl_ms=1, ts_ms=1))
-        store2.append(_rec("percepts:t:2", "reading", trace_id="t"))
-        found = store2.find_active_by_kind("percepts", "reading", "t")
-        assert found is not None, (
-            "find_active_by_kind() returned None while a live record exists; it must "
-            "walk past expired candidates rather than judging only the oldest"
-        )
-        assert found.id == "percepts:t:2", f"found {found.id!r}, expected the live record"
-        store2.close()
+        try:
+            store2.append(_rec("percepts:t:1", "reading", trace_id="t", ttl_ms=1, ts_ms=1))
+            store2.append(_rec("percepts:t:2", "reading", trace_id="t"))
+            found = store2.find_active_by_kind("percepts", "reading", "t")
+            assert found is not None, (
+                "find_active_by_kind() returned None while a live record exists; it must "
+                "walk past expired candidates rather than judging only the oldest"
+            )
+            assert found.id == "percepts:t:2", f"found {found.id!r}, expected the live record"
+        finally:
+            store2.close()
 
         # 5. invalidate records status and reason
         store.invalidate("percepts:conf:2", "because")
@@ -89,20 +91,22 @@ def store_conformance(store_factory: Callable[[], StoreProtocol]) -> None:
         # 6. a transaction rolls back on exception
         store3 = store_factory()
         try:
-            with store3.transaction():
-                store3.append(_rec("percepts:tx:1", "obs", trace_id="tx"))
-                raise RuntimeError("abort")
-        except RuntimeError:
-            pass
-        assert store3.get("percepts:tx:1") is None, \
-            "transaction() did not roll back a write when the block raised"
+            try:
+                with store3.transaction():
+                    store3.append(_rec("percepts:tx:1", "obs", trace_id="tx"))
+                    raise RuntimeError("abort")
+            except RuntimeError:
+                pass
+            assert store3.get("percepts:tx:1") is None, \
+                "transaction() did not roll back a write when the block raised"
 
-        # 7. transactions are re-entrant: only the outermost commits
-        with store3.transaction():
+            # 7. transactions are re-entrant: only the outermost commits
             with store3.transaction():
-                store3.append(_rec("percepts:tx:2", "obs", trace_id="tx"))
-        assert store3.get("percepts:tx:2") is not None, \
-            "a nested transaction() lost a write the outer block completed"
-        store3.close()
+                with store3.transaction():
+                    store3.append(_rec("percepts:tx:2", "obs", trace_id="tx"))
+            assert store3.get("percepts:tx:2") is not None, \
+                "a nested transaction() lost a write the outer block completed"
+        finally:
+            store3.close()
     finally:
         store.close()

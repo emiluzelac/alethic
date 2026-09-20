@@ -502,21 +502,31 @@ class Kernel:
             context = ValidationContext(store=self.store, trace_id=trace_id,
                                         now_ms=int(time.time() * 1000))
             results: List[ValidationResult] = []
+
+            def concerns_so_far() -> Tuple[str, ...]:
+                # A concern from a validator that already ran must survive
+                # even when a later validator in the same chain aborts the
+                # loop -- `ActionDecision.concerns` is collected regardless
+                # of whether the overall decision succeeds.
+                return tuple(r.detail for r in results if r.ok and r.marginal)
+
             for validator in self._action_validators:
                 try:
                     result = validator.validate_action(
                         prop.payload, view["beliefs"], view["constraints"], context)
                 except Exception as exc:  # fail closed: a broken gate is a closed gate
                     detail = f"action validator {validator.validator_id!r} raised: {exc}"
-                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results)
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
+                                               concerns=concerns_so_far())
                 if not isinstance(result, ValidationResult):
                     detail = (f"action validator {validator.validator_id!r} returned "
                               f"{type(result).__name__}, not ValidationResult")
-                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results)
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
+                                               concerns=concerns_so_far())
                 results.append(result)
 
             failures = [r for r in results if not r.ok]
-            concerns = tuple(r.detail for r in results if r.ok and r.marginal)
+            concerns = concerns_so_far()
             if failures:
                 severity: Literal["block", "review"] = (
                     "review" if any(r.severity == "review" for r in failures) else "block")

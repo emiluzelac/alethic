@@ -120,3 +120,24 @@ def test_the_old_two_tuple_api_still_works() -> None:
     ok, code = kernel.commit_action_from_proposal(_propose(kernel, trace), trace)
 
     assert (ok, code) == (False, "A_SAID_NO")
+
+
+def test_a_marginal_pass_survives_a_later_crash() -> None:
+    """A concern from a validator that already ran must not vanish just
+    because a later validator in the same chain crashes. `concerns` is
+    documented as collected "whether or not the overall decision
+    succeeded" -- a VALIDATOR_ERROR abort is exactly such a case."""
+    class Exploding:
+        validator_id = "boom"
+
+        def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any],
+                            constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
+            raise RuntimeError("kaboom")
+
+    kernel = Kernel(action_validators=[MarginalPass(), Exploding()])
+    trace = "t-8"
+    decision = kernel.decide_action(_propose(kernel, trace), trace)
+
+    assert decision.ok is False
+    assert decision.code == "VALIDATOR_ERROR"
+    assert decision.concerns == ("close to the line",)
