@@ -75,15 +75,22 @@ class TestCommitIsAtomic:
         assert view["evidence"]["validation_refund_due"]["result"] == "pass"
         assert kernel.store.get(prop.id).status == "INVALIDATED"
 
-    def test_failed_action_rejection_leaves_no_evidence_behind(self, kernel: Kernel) -> None:
-        """The same P0-4 invariant, now on the action-rejection path.
+    def test_failed_evidence_write_does_not_invalidate_the_proposal_anyway(
+        self, kernel: Kernel
+    ) -> None:
+        """If the evidence write itself raises, `_reject_action` must not
+        swallow that and invalidate the proposal regardless.
 
-        `_reject_action` writes an evidence artifact recording *why* an
-        action was refused, then invalidates the proposal, under one
-        transaction. If the evidence write survives a rejection that never
-        completed, the trail asserts a validation outcome for a proposal
-        that is still live and retryable -- the mirror image of the belief
-        case above.
+        This does **not** prove rollback: the mock intercepts `kernel.write`
+        before any record is appended, so there is nothing in the store for
+        `transaction()` to undo, and this test cannot tell whether the write
+        happens inside or outside `with self.store.transaction():` -- the
+        mock raises identically either way. What it does prove is narrower
+        but still real: the exception from the write reaches the caller
+        (isn't caught and ignored), and the proposal is not invalidated by a
+        rejection whose own evidence write never completed. The genuine
+        rollback proof, where a write lands for real before a later step
+        fails, is the next test below.
         """
         trace = "t-atomic-action"
         action = kernel.write("planner", "actions", "PROPOSE", "send",
@@ -108,14 +115,61 @@ class TestCommitIsAtomic:
         assert calls["n"] == 1, "the rejection evidence write should have been attempted"
 
         view = kernel.current_view(trace)
+        assert view["evidence"] == {}
+        still = kernel.store.get(action.id)
+        assert still is not None and still.status == "ACTIVE", (
+            "proposal was invalidated despite the evidence write failing"
+        )
+
+    def test_the_evidence_write_is_rolled_back_when_invalidate_fails_after_it_lands(
+        self, kernel: Kernel
+    ) -> None:
+        """The actual atomicity proof for the action-rejection path.
+
+        Same shape as `test_failed_belief_commit_leaves_no_evidence_behind`
+        above: it fails on its third and final write, *after* two earlier
+        writes have genuinely landed, so a passing assertion means real work
+        was undone, not that nothing happened. `_reject_action`'s
+        transaction has only two steps -- the evidence write, then
+        `store.invalidate` -- so here the evidence write is left completely
+        real (unmocked) and `store.invalidate` is the one forced to fail
+        *after* the evidence record has actually been appended. If a
+        regression ever moved the evidence write outside
+        `with self.store.transaction():`, that write would no longer be
+        covered by the rollback and this test would catch it: the record
+        would still be there after the RuntimeError.
+        """
+        trace = "t-atomic-action-2"
+        action = kernel.write("planner", "actions", "PROPOSE", "send",
+                              {"type": "send", "requires_beliefs": ["refund_due"]},
+                              trace)
+
+        real_invalidate = kernel.store.invalidate
+        calls = {"n": 0}
+
+        def exploding_invalidate(rec_id, reason):
+            if rec_id == action.id:
+                calls["n"] += 1
+                raise RuntimeError("simulated failure after the evidence write landed")
+            return real_invalidate(rec_id, reason)
+
+        kernel.store.invalidate = exploding_invalidate  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            kernel.decide_action(action.id, trace)
+        kernel.store.invalidate = real_invalidate  # type: ignore[method-assign]
+
+        assert calls["n"] == 1, "the invalidate step should have been attempted"
+
+        view = kernel.current_view(trace)
         assert view["evidence"] == {}, (
-            "evidence artifact survived a rejection that never completed -- "
-            "the audit trail is asserting a validation outcome for nothing"
+            "the evidence write landed for real, then the transaction failed "
+            "on the very next step -- the record must have been rolled "
+            "back, not left behind asserting a validation outcome for a "
+            "proposal that was never actually invalidated"
         )
         still = kernel.store.get(action.id)
         assert still is not None and still.status == "ACTIVE", (
-            "proposal was invalidated by a rejection that failed, so it can "
-            "never be retried"
+            "proposal was invalidated despite the invalidate call raising"
         )
 
 
