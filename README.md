@@ -96,6 +96,27 @@ Every worker can propose. Only the kernel can commit. State lives in seven
 semantic slots: percepts, beliefs, constraints, plans, evidence, predictions,
 and actions.
 
+### Writing a store
+
+Any object satisfying
+[`StoreProtocol`](https://github.com/emiluzelac/alethic/blob/main/docs/architecture.md#store-abstraction)
+can back the kernel in place of `MemoryStore` or `SqliteStore`. The subtle
+parts of that contract — lazy TTL expiry, walking candidates past an expired
+one instead of judging only the oldest, and re-entrant transactions — are
+exactly where a third backend can quietly diverge from the two that ship.
+`alethic.testing.store_conformance` runs the same checks the shipped stores
+are held to, against a factory for your store:
+
+```python
+from alethic.testing import store_conformance
+
+store_conformance(lambda: MyStore(...))
+```
+
+It raises `AssertionError` on the first violation, naming what failed. See
+[`src/testing.py`](https://github.com/emiluzelac/alethic/blob/main/src/testing.py)
+for the full list of assertions.
+
 ## What belongs here
 
 This repository contains only the domain-neutral Alethic substrate:
