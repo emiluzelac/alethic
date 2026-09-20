@@ -21,3 +21,15 @@ def test_no_compatibility_namespace_is_shipped() -> None:
 
 def test_package_reports_the_release_version() -> None:
     assert __version__ == "0.4.0"
+
+
+def test_extension_authors_can_import_what_they_must_construct():
+    """A third-party validator constructs ValidationResult; a third-party
+    store raises RecordIdConflict. Both must be importable from the top level."""
+    import alethic
+
+    assert hasattr(alethic, "ValidationResult")
+    assert hasattr(alethic, "RecordIdConflict")
+    assert hasattr(alethic, "BeliefValidator")
+    for name in ("ValidationResult", "RecordIdConflict", "BeliefValidator"):
+        assert name in alethic.__all__

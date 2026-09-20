@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version as _version
 
 from .kernel import Kernel
-from .schema import Record, Provenance, Slot, WriteMode
+from .schema import Provenance, Record, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .sqlite_store import SqliteStore
@@ -32,6 +32,7 @@ __all__ = [
     "PERMISSIONS",
     "Provenance",
     "Record",
+    "RecordIdConflict",
     "Role",
     "Session",
     "SimRule",
