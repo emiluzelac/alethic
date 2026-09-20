@@ -44,3 +44,23 @@ def test_validator_without_an_id_is_rejected():
 
     with pytest.raises(TypeError, match="non-empty validator_id"):
         Kernel(action_validators=[Nameless()])
+
+
+class RecordingValidator:
+    def __init__(self, validator_id: str) -> None:
+        self.validator_id = validator_id
+
+    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any],
+                        constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
+        return ValidationResult(True, "OK", "fine")
+
+
+def test_compatibility_setter_replaces_only_first_validator() -> None:
+    second = RecordingValidator("second")
+    replacement = RecordingValidator("replacement")
+    kernel = Kernel(action_validators=[RecordingValidator("first"), second])
+
+    kernel.symbolic_validator = replacement
+
+    assert [v.validator_id for v in kernel.action_validators] == ["replacement", "second"]
+    assert kernel.symbolic_validator is replacement
