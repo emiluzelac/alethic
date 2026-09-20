@@ -31,13 +31,14 @@ class BeliefValidator(Protocol):
         self,
         belief_payload: Dict[str, Any],
         percepts: Dict[str, Any],
+        context: ValidationContext,
     ) -> ValidationResult:
         ...
 
 class EvidenceValidator:
     validator_id = "structural_evidence"
 
-    def validate_belief_commit(self, belief_payload: Dict[str, Any], percepts: Dict[str, Any]) -> ValidationResult:
+    def validate_belief_commit(self, belief_payload: Dict[str, Any], percepts: Dict[str, Any], context: ValidationContext) -> ValidationResult:
         depends = belief_payload.get("depends_on", [])
         for k in depends:
             p = percepts.get(k)

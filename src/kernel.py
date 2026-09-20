@@ -267,16 +267,27 @@ class Kernel:
     # ── belief commitment with evidence validation ──────────────────────
 
     def commit_belief_from_proposal(self, proposal_id: str, trace_id: str) -> Tuple[bool, str]:
+        """Run belief validators in order, stopping at the first failure.
+
+        Unlike ``decide_action`` — which runs its whole chain to completion —
+        this stops at the first failing gate. That asymmetry is deliberate:
+        a belief is a truth claim, where the first disqualifying reason
+        settles it, while an action decision goes to a person who needs the
+        full picture. Do not make this run-to-completion like the action
+        chain; the short-circuit here is intentional.
+        """
         with self._commit_lock:
             prop = self.store.get(proposal_id)
             if not prop or prop.status != "ACTIVE" or prop.slot != "beliefs" or prop.mode != "PROPOSE":
                 return False, "INVALID_PROPOSAL"
 
             view = self.current_view(trace_id)
+            context = ValidationContext(store=self.store, trace_id=trace_id,
+                                        now_ms=int(time.time() * 1000))
             validator_results: List[Dict[str, Any]] = []
             for validator in self._belief_validators:
                 try:
-                    res = validator.validate_belief_commit(prop.payload, view["percepts"])
+                    res = validator.validate_belief_commit(prop.payload, view["percepts"], context)
                 except Exception as exc:
                     detail = (
                         f"Belief validator {validator.validator_id!r} failed: "

@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 import pytest
 
-from alethic import EvidenceValidator, Kernel, ValidationResult
+from alethic import EvidenceValidator, Kernel, ValidationContext, ValidationResult
 
 
 class ExactEntailmentValidator:
@@ -16,6 +16,7 @@ class ExactEntailmentValidator:
         self,
         belief_payload: Dict[str, Any],
         percepts: Dict[str, Any],
+        context: ValidationContext,
     ) -> ValidationResult:
         claim = belief_payload.get("value")
         cited = [
@@ -48,6 +49,7 @@ class RecordingValidator:
         self,
         belief_payload: Dict[str, Any],
         percepts: Dict[str, Any],
+        context: ValidationContext,
     ) -> ValidationResult:
         self.calls.append(self.validator_id)
         return ValidationResult(
@@ -64,6 +66,7 @@ class RaisingValidator:
         self,
         belief_payload: Dict[str, Any],
         percepts: Dict[str, Any],
+        context: ValidationContext,
     ) -> ValidationResult:
         raise TimeoutError("external verifier timed out")
 
@@ -75,6 +78,7 @@ class WrongReturnValidator:
         self,
         belief_payload: Dict[str, Any],
         percepts: Dict[str, Any],
+        context: ValidationContext,
     ) -> Any:
         return {"ok": True}
 
@@ -270,3 +274,29 @@ def test_chain_configuration_rejects_empty_duplicate_and_invalid_entries() -> No
 def test_exposed_chain_is_an_immutable_tuple() -> None:
     kernel = Kernel()
     assert isinstance(kernel.belief_validators, tuple)
+
+
+def test_belief_validators_receive_the_context() -> None:
+    seen = {}
+
+    class Recording:
+        validator_id = "recording"
+
+        def validate_belief_commit(
+            self,
+            belief_payload: Dict[str, Any],
+            percepts: Dict[str, Any],
+            context: ValidationContext,
+        ) -> ValidationResult:
+            seen["trace_id"] = context.trace_id
+            seen["has_store"] = context.store is not None
+            return ValidationResult(True, "OK", "fine")
+
+    kernel = Kernel(belief_validators=[Recording()])
+    trace = "t-ctx"
+    kernel.write("tool", "percepts", "COMMIT", "obs", {"value": 1}, trace, confidence=0.9)
+    proposal = kernel.write("planner", "beliefs", "PROPOSE", "b",
+                            {"value": True, "depends_on": ["obs"]}, trace)
+    kernel.commit_belief_from_proposal(proposal.id, trace)
+
+    assert seen == {"trace_id": "t-ctx", "has_store": True}

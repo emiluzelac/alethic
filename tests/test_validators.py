@@ -7,18 +7,19 @@ from alethic.validators import EvidenceValidator, SymbolicValidator
 class TestEvidenceValidator:
     def setup_method(self):
         self.ev = EvidenceValidator()
+        self.context = ValidationContext(store=MemoryStore(), trace_id="t-1", now_ms=1)
 
     def test_ok_with_clean_percepts(self, clean_charge):
         belief = {"value": True, "depends_on": ["charge"]}
         percepts = {"charge": clean_charge}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is True
         assert result.code == "OK"
 
     def test_missing_evidence(self):
         belief = {"value": True, "depends_on": ["charge"]}
         percepts = {}  # no charge
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is False
         assert result.code == "MISSING_EVIDENCE"
         assert result.context["percept_key"] == "charge"
@@ -26,27 +27,27 @@ class TestEvidenceValidator:
     def test_stale_evidence(self, stale_charge):
         belief = {"value": True, "depends_on": ["charge"]}
         percepts = {"charge": stale_charge}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is False
         assert result.code == "STALE_EVIDENCE"
 
     def test_conflicting_evidence(self, conflict_charge):
         belief = {"value": True, "depends_on": ["charge"]}
         percepts = {"charge": conflict_charge}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is False
         assert result.code == "CONFLICTING_EVIDENCE"
 
     def test_no_depends_on_always_passes(self):
         belief = {"value": True}  # no depends_on
         percepts = {}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is True
 
     def test_multiple_dependencies_first_missing(self):
         belief = {"value": True, "depends_on": ["charge", "invoice"]}
         percepts = {"invoice": {"stale": False, "conflict": False}}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is False
         assert result.code == "MISSING_EVIDENCE"
         assert result.context["percept_key"] == "charge"
@@ -54,7 +55,7 @@ class TestEvidenceValidator:
     def test_multiple_dependencies_second_stale(self, clean_charge):
         belief = {"value": True, "depends_on": ["charge", "invoice"]}
         percepts = {"charge": clean_charge, "invoice": {"stale": True}}
-        result = self.ev.validate_belief_commit(belief, percepts)
+        result = self.ev.validate_belief_commit(belief, percepts, self.context)
         assert result.ok is False
         assert result.code == "STALE_EVIDENCE"
 
