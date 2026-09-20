@@ -9,7 +9,13 @@ from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .sqlite_store import SqliteStore
 from .permissions import PERMISSIONS, Role
-from .validators import BeliefValidator, EvidenceValidator, SymbolicValidator, ValidationResult
+from .validators import (
+    ActionValidator,
+    BeliefValidator,
+    EvidenceValidator,
+    SymbolicValidator,
+    ValidationResult,
+)
 from .worker import Worker, BaseWorker
 from .orchestrator import Orchestrator, OrchestratorResult
 from .session import Session
@@ -22,6 +28,7 @@ except PackageNotFoundError:  # running from a source tree, not installed
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "ActionValidator",
     "AdaptiveWorker",
     "BaseWorker",
     "BeliefValidator",

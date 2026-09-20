@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alethic import ValidationResult
+from alethic import MemoryStore, ValidationContext, ValidationResult
 from alethic.validators import EvidenceValidator, SymbolicValidator
 
 
@@ -62,19 +62,20 @@ class TestEvidenceValidator:
 class TestSymbolicValidator:
     def setup_method(self):
         self.sv = SymbolicValidator()
+        self.context = ValidationContext(store=MemoryStore(), trace_id="t-1", now_ms=1)
 
     def test_ok_action(self):
         action = {"type": "issue_refund", "requires_beliefs": ["refund_due"]}
         beliefs = {"refund_due": {"value": True}}
         constraints = {}
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is True
 
     def test_missing_belief(self):
         action = {"type": "issue_refund", "requires_beliefs": ["refund_due"]}
         beliefs = {}
         constraints = {}
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is False
         assert result.code == "NO_COMMITTED_BELIEF"
 
@@ -82,7 +83,7 @@ class TestSymbolicValidator:
         action = {"type": "issue_refund", "requires_beliefs": ["refund_due"]}
         beliefs = {"refund_due": {"value": False}}
         constraints = {}
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is False
         assert result.code == "BELIEF_NOT_SATISFIED"
 
@@ -98,7 +99,7 @@ class TestSymbolicValidator:
                 "blocks_field": "is_duplicate",
             },
         }
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is False
         assert result.code == "NO_DUPLICATE_REFUND_BLOCKED"
 
@@ -111,7 +112,7 @@ class TestSymbolicValidator:
                 "blocks_field": "is_duplicate",
             },
         }
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is True
 
     def test_constraint_field_not_true(self):
@@ -127,14 +128,14 @@ class TestSymbolicValidator:
                 "blocks_field": "is_duplicate",
             },
         }
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is True
 
     def test_action_with_no_requires_beliefs(self):
         action = {"type": "queue_for_review", "reason": "test"}
         beliefs = {}
         constraints = {}
-        result = self.sv.validate_action(action, beliefs, constraints)
+        result = self.sv.validate_action(action, beliefs, constraints, self.context)
         assert result.ok is True
 
 

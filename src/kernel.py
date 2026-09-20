@@ -4,11 +4,18 @@ import threading
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import time
 
+from .context import ValidationContext
 from .schema import Record, Provenance, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .permissions import PERMISSIONS, Role
-from .validators import BeliefValidator, EvidenceValidator, SymbolicValidator, ValidationResult
+from .validators import (
+    ActionValidator,
+    BeliefValidator,
+    EvidenceValidator,
+    SymbolicValidator,
+    ValidationResult,
+)
 
 def _rid(slot: str, n: int, trace_id: str) -> str:
     return f"{slot}:{trace_id}:{n}"
@@ -23,13 +30,14 @@ class Kernel:
                  conflict_confidence_threshold: float = 0.7,
                  store: Optional[StoreProtocol] = None,
                  *,
-                 belief_validators: Optional[Sequence[BeliefValidator]] = None) -> None:
+                 belief_validators: Optional[Sequence[BeliefValidator]] = None,
+                 action_validators: Optional[Sequence[ActionValidator]] = None) -> None:
         self.store: StoreProtocol = store if store is not None else MemoryStore()
         self._counters: Dict[str, int] = {}
         self._counter_lock = threading.Lock()
         self._commit_lock = threading.Lock()
         self._belief_validators = self._prepare_belief_validators(belief_validators)
-        self.symbolic_validator = SymbolicValidator()
+        self._action_validators = self._prepare_action_validators(action_validators)
         self.min_confidence = min_confidence
         self.conflict_confidence_threshold = conflict_confidence_threshold
 
@@ -70,6 +78,45 @@ class Kernel:
         """Replace the first validator while retaining the remainder of the chain."""
         self._belief_validators = self._prepare_belief_validators(
             [validator, *self._belief_validators[1:]]
+        )
+
+    @staticmethod
+    def _prepare_action_validators(
+        validators: Optional[Sequence[ActionValidator]],
+    ) -> Tuple[ActionValidator, ...]:
+        configured = list(validators) if validators is not None else [SymbolicValidator()]
+        if not configured:
+            raise ValueError("action_validators must contain at least one validator")
+        seen: set[str] = set()
+        for validator in configured:
+            validator_id = getattr(validator, "validator_id", None)
+            validate = getattr(validator, "validate_action", None)
+            if not isinstance(validator_id, str) or not validator_id.strip():
+                raise TypeError("each action validator must define a non-empty validator_id")
+            if not callable(validate):
+                raise TypeError(
+                    f"action validator {validator_id!r} must define validate_action()"
+                )
+            if validator_id in seen:
+                raise ValueError(f"duplicate action validator id: {validator_id!r}")
+            seen.add(validator_id)
+        return tuple(configured)
+
+    @property
+    def action_validators(self) -> Tuple[ActionValidator, ...]:
+        """The immutable ordered chain applied to every action proposal."""
+        return self._action_validators
+
+    @property
+    def symbolic_validator(self) -> ActionValidator:
+        """Compatibility alias for the first configured action validator."""
+        return self._action_validators[0]
+
+    @symbolic_validator.setter
+    def symbolic_validator(self, validator: ActionValidator) -> None:
+        """Replace the first validator while retaining the remainder of the chain."""
+        self._action_validators = self._prepare_action_validators(
+            [validator, *self._action_validators[1:]]
         )
 
     def _next_id(self, slot: str, trace_id: str) -> str:
@@ -383,7 +430,12 @@ class Kernel:
                                           f"Prediction negative for: {action_type}")
                     return False, "NEGATIVE_PREDICTION"
 
-            res = self.symbolic_validator.validate_action(prop.payload, view["beliefs"], view["constraints"])
+            context = ValidationContext(
+                store=self.store, trace_id=trace_id, now_ms=int(time.time() * 1000)
+            )
+            res = self.symbolic_validator.validate_action(
+                prop.payload, view["beliefs"], view["constraints"], context
+            )
             if not res.ok:
                 self.store.invalidate(proposal_id, res.detail)
                 return False, res.code

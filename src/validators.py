@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Literal, Protocol
 
+from .context import ValidationContext
+
 # severity is only meaningful when ok is False. "block" means the kernel
 # refuses. "review" means it refuses and the decision belongs to a person.
 # The kernel never interprets these beyond passing them back to the caller.
@@ -50,8 +52,28 @@ class EvidenceValidator:
                     f"Belief depends on conflicting percept: {k}", {"percept_key": k})
         return ValidationResult(True, "OK", "Belief evidence acceptable")
 
+class ActionValidator(Protocol):
+    """A synchronous gate that must pass before an action may be committed.
+
+    Implementations live outside the kernel. ``validator_id`` is recorded in
+    the validation evidence for every decision the chain contributes to.
+    """
+
+    validator_id: str
+
+    def validate_action(
+        self,
+        action: Dict[str, Any],
+        committed_beliefs: Dict[str, Any],
+        constraints: Dict[str, Any],
+        context: ValidationContext,
+    ) -> ValidationResult:
+        ...
+
 class SymbolicValidator:
-    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any], constraints: Dict[str, Any]) -> ValidationResult:
+    validator_id = "symbolic"
+
+    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any], constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
         for belief_name in action.get("requires_beliefs", []):
             belief = committed_beliefs.get(belief_name)
             if belief is None:
