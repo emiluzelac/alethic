@@ -520,7 +520,15 @@ class Kernel:
         with self._commit_lock:
             prop = self.store.get(proposal_id)
             if not prop or prop.status != "ACTIVE" or prop.slot != "actions" or prop.mode != "PROPOSE":
-                return ActionDecision(ok=False, code="INVALID_ACTION_PROPOSAL")
+                # Every refusal names itself. These three gates run before the
+                # validator chain, so they have no ValidationResult to draw a
+                # reason from -- without this they refused in silence, in a
+                # field documented as why it was refused.
+                return ActionDecision(
+                    ok=False,
+                    code="INVALID_ACTION_PROPOSAL",
+                    reasons=(f"Not an active action proposal: {proposal_id}",),
+                )
             view = self.current_view(trace_id)
 
             # optional prediction gate
@@ -533,13 +541,15 @@ class Kernel:
                         matched = pval
                         break
                 if matched is None:
-                    self.store.invalidate(proposal_id,
-                                          f"No prediction for action type: {action_type}")
-                    return ActionDecision(ok=False, code="NO_PREDICTION")
+                    detail = f"No prediction for action type: {action_type}"
+                    self.store.invalidate(proposal_id, detail)
+                    return ActionDecision(ok=False, code="NO_PREDICTION",
+                                          reasons=(detail,))
                 if matched.get("expected_outcome", 0) < 0:
-                    self.store.invalidate(proposal_id,
-                                          f"Prediction negative for: {action_type}")
-                    return ActionDecision(ok=False, code="NEGATIVE_PREDICTION")
+                    detail = f"Prediction negative for: {action_type}"
+                    self.store.invalidate(proposal_id, detail)
+                    return ActionDecision(ok=False, code="NEGATIVE_PREDICTION",
+                                          reasons=(detail,))
 
             context = ValidationContext(store=self.store, trace_id=trace_id,
                                         now_ms=int(time.time() * 1000))

@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_persistent()` and `list_by_status()` are ordered the same way, for
   the same reason: an append-only audit trail read back in an arbitrary order
   is not an audit trail.
+- `decide_action()`'s three pre-chain refusals — `INVALID_ACTION_PROPOSAL`,
+  `NO_PREDICTION`, and `NEGATIVE_PREDICTION` — now populate `reasons`. Two of
+  them already computed the sentence and wrote it into the proposal's
+  invalidation reason before discarding it, so three of the six documented
+  refusal codes came back with nothing in the field documented as why it was
+  refused.
 - A committed action now writes a `result: "pass"` validation evidence
   artifact, and cites it in the committed record's `evidence_refs`. Only
   refusals left evidence, so the decision that let an action through was the

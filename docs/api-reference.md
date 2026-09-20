@@ -187,6 +187,13 @@ for why the two chains disagree on this.
 | `"VALIDATOR_ERROR"` | `False` | A validator raised an exception or returned something other than `ValidationResult` |
 | `"<CUSTOM_CODE>"` | `False` | The first failing validator's code (e.g. `NO_COMMITTED_BELIEF`, `BELIEF_NOT_SATISFIED`, `{CONSTRAINT}_BLOCKED` from `SymbolicValidator`); custom validator codes pass through unchanged |
 
+The proposal check and the prediction gate run *before* the validator chain,
+so `INVALID_ACTION_PROPOSAL`, `NO_PREDICTION`, and `NEGATIVE_PREDICTION`
+refuse with an empty `results` — no validator ran, and no gate has an opinion
+to report. They each carry their own one-sentence `reasons` entry, the same
+sentence written into the proposal's invalidation reason. Every other
+refusal carries one `ValidationResult` per validator that ran.
+
 `ActionDecision.severity` is `"review"` if any failing validator returned
 `severity="review"`, otherwise `"block"`. `ActionDecision.concerns` collects
 the `detail` of every validator that passed with `marginal=True`, whether or

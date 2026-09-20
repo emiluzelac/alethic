@@ -208,3 +208,50 @@ def test_a_committed_action_points_at_the_evidence_that_cleared_it() -> None:
     assert evidence is not None
     assert evidence.kind == "validation_action_send"
     assert evidence.payload["result"] == "pass"
+
+
+def test_an_invalid_proposal_refusal_says_why() -> None:
+    kernel = Kernel()
+
+    decision = kernel.decide_action("actions:nope:1", "t-invalid")
+
+    assert decision.code == "INVALID_ACTION_PROPOSAL"
+    assert decision.reasons == ("Not an active action proposal: actions:nope:1",), (
+        f"`reasons` is documented as why it was refused, got {decision.reasons!r}"
+    )
+
+
+def test_a_missing_prediction_refusal_says_why() -> None:
+    """The detail was computed and written into the invalidation reason, then
+    dropped from the decision handed back to the caller."""
+    kernel = Kernel()
+    trace = "t-no-prediction"
+    proposal_id = _propose(kernel, trace)
+
+    decision = kernel.decide_action(proposal_id, trace, require_prediction=True)
+
+    assert decision.code == "NO_PREDICTION"
+    assert decision.reasons == ("No prediction for action type: send",)
+    refused = kernel.store.get(proposal_id)
+    assert refused is not None
+    assert refused.reason == decision.reasons[0], (
+        "the store's reason and the decision's reason must be the same sentence"
+    )
+
+
+def test_a_negative_prediction_refusal_says_why() -> None:
+    kernel = Kernel()
+    trace = "t-negative-prediction"
+    kernel.write(
+        "kernel", "predictions", "COMMIT", "outcome",
+        {"action_type": "send", "expected_outcome": -1}, trace,
+    )
+    proposal_id = _propose(kernel, trace)
+
+    decision = kernel.decide_action(proposal_id, trace, require_prediction=True)
+
+    assert decision.code == "NEGATIVE_PREDICTION"
+    assert decision.reasons == ("Prediction negative for: send",)
+    refused = kernel.store.get(proposal_id)
+    assert refused is not None
+    assert refused.reason == decision.reasons[0]
