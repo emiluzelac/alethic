@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import time
 
 from .context import ValidationContext
+from .decision import ActionDecision
 from .schema import Record, Provenance, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
@@ -152,6 +153,44 @@ class Kernel:
             self.store.invalidate(proposal.id, detail)
         return False, code
 
+    def _reject_action(
+        self,
+        proposal: Record,
+        trace_id: str,
+        code: str,
+        detail: str,
+        results: List[ValidationResult],
+        severity: Literal["block", "review"] = "block",
+        concerns: Tuple[str, ...] = (),
+    ) -> ActionDecision:
+        """Atomically record the failed gates and invalidate the proposal."""
+        with self.store.transaction():
+            self.write(
+                "evidence_validator",
+                "evidence",
+                "COMMIT",
+                f"validation_{proposal.kind}",
+                {
+                    "action": proposal.kind,
+                    "proposal_id": proposal.id,
+                    "result": "fail",
+                    "code": code,
+                    "validators": [
+                        {"validator_id": v.validator_id, "code": r.code, "ok": r.ok}
+                        for v, r in zip(self._action_validators, results)
+                    ],
+                },
+                trace_id,
+            )
+            self.store.invalidate(proposal.id, detail)
+        return ActionDecision(
+            ok=False,
+            code=code,
+            results=tuple(results),
+            reasons=tuple(r.detail for r in results if not r.ok) or (detail,),
+            concerns=concerns,
+            severity=severity,
+        )
 
     def write(self, role: Role, slot: Slot, mode: WriteMode, kind: str, payload: Dict[str, Any],
               trace_id: str, input_refs: Optional[List[str]] = None, confidence: Optional[float] = None,
@@ -404,12 +443,22 @@ class Kernel:
 
     # ── action commitment with symbolic validation ──────────────────────
 
-    def commit_action_from_proposal(self, proposal_id: str, trace_id: str,
-                                    require_prediction: bool = False) -> Tuple[bool, str]:
+    def decide_action(self, proposal_id: str, trace_id: str,
+                      require_prediction: bool = False) -> ActionDecision:
+        """Run every action validator to completion and report all of it.
+
+        Unlike ``commit_belief_from_proposal`` — which stops at the first
+        failing gate because a belief is a truth claim and the first
+        disqualifying reason settles it — this runs the *whole* chain even
+        after a gate fails. An action decision goes to a person who needs
+        the full picture: every reason it was refused, and every gate that
+        passed only narrowly. Do not make this short-circuit like the
+        belief chain; that asymmetry is intentional.
+        """
         with self._commit_lock:
             prop = self.store.get(proposal_id)
             if not prop or prop.status != "ACTIVE" or prop.slot != "actions" or prop.mode != "PROPOSE":
-                return False, "INVALID_ACTION_PROPOSAL"
+                return ActionDecision(ok=False, code="INVALID_ACTION_PROPOSAL")
             view = self.current_view(trace_id)
 
             # optional prediction gate
@@ -424,25 +473,47 @@ class Kernel:
                 if matched is None:
                     self.store.invalidate(proposal_id,
                                           f"No prediction for action type: {action_type}")
-                    return False, "NO_PREDICTION"
+                    return ActionDecision(ok=False, code="NO_PREDICTION")
                 if matched.get("expected_outcome", 0) < 0:
                     self.store.invalidate(proposal_id,
                                           f"Prediction negative for: {action_type}")
-                    return False, "NEGATIVE_PREDICTION"
+                    return ActionDecision(ok=False, code="NEGATIVE_PREDICTION")
 
-            context = ValidationContext(
-                store=self.store, trace_id=trace_id, now_ms=int(time.time() * 1000)
-            )
-            res = self.symbolic_validator.validate_action(
-                prop.payload, view["beliefs"], view["constraints"], context
-            )
-            if not res.ok:
-                self.store.invalidate(proposal_id, res.detail)
-                return False, res.code
+            context = ValidationContext(store=self.store, trace_id=trace_id,
+                                        now_ms=int(time.time() * 1000))
+            results: List[ValidationResult] = []
+            for validator in self._action_validators:
+                try:
+                    result = validator.validate_action(
+                        prop.payload, view["beliefs"], view["constraints"], context)
+                except Exception as exc:  # fail closed: a broken gate is a closed gate
+                    detail = f"action validator {validator.validator_id!r} raised: {exc}"
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results)
+                if not isinstance(result, ValidationResult):
+                    detail = (f"action validator {validator.validator_id!r} returned "
+                              f"{type(result).__name__}, not ValidationResult")
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results)
+                results.append(result)
+
+            failures = [r for r in results if not r.ok]
+            concerns = tuple(r.detail for r in results if r.ok and r.marginal)
+            if failures:
+                severity: Literal["block", "review"] = (
+                    "review" if any(r.severity == "review" for r in failures) else "block")
+                return self._reject_action(prop, trace_id, failures[0].code,
+                                           failures[0].detail, results,
+                                           severity=severity, concerns=concerns)
+
             with self.store.transaction():
                 self.store.invalidate(proposal_id, "SUPERSEDED_BY_COMMIT")
                 self.write(
                     "kernel", "actions", "COMMIT", prop.kind, prop.payload, trace_id,
                     input_refs=prop.prov.input_refs, confidence=prop.prov.confidence,
                 )
-            return True, "COMMITTED"
+            return ActionDecision(ok=True, code="COMMITTED", results=tuple(results), concerns=concerns)
+
+    def commit_action_from_proposal(self, proposal_id: str, trace_id: str,
+                                    require_prediction: bool = False) -> Tuple[bool, str]:
+        """Back-compatible two-tuple view of :meth:`decide_action`."""
+        decision = self.decide_action(proposal_id, trace_id, require_prediction)
+        return decision.ok, decision.code

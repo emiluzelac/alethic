@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version as _version
 
 from .context import ValidationContext
+from .decision import ActionDecision
 from .kernel import Kernel
 from .schema import Provenance, Record, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
@@ -28,6 +29,7 @@ except PackageNotFoundError:  # running from a source tree, not installed
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "ActionDecision",
     "ActionValidator",
     "AdaptiveWorker",
     "BaseWorker",
