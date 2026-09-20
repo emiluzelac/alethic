@@ -548,7 +548,13 @@ store_conformance(store_factory: Callable[[], StoreProtocol]) -> None
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `store_factory` | `Callable[[], StoreProtocol]` | Called (possibly more than once) to produce a fresh, empty store instance |
+| `store_factory` | `Callable[[], StoreProtocol]` | Called more than once; must return a fresh, empty store instance every time |
+
+The factory is called more than once, and each call must produce a store with
+no records in it — a new database file or directory per call, not another
+handle on the one before. Later steps assume the ids they use are free, so a
+factory that reuses one path passes only for as long as those ids happen not
+to collide.
 
 Raises `AssertionError` on the first contract violation, naming what failed.
 Raises nothing if the store agrees with the shipped stores on every checked
@@ -556,6 +562,8 @@ behaviour. Closes every store instance it creates, including on failure.
 
 ```python
 from alethic.testing import store_conformance
+from itertools import count
 
-store_conformance(lambda: MyStore(...))
+nth = count()
+store_conformance(lambda: MyStore(f"conformance-{next(nth)}.db"))
 ```

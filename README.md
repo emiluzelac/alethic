@@ -123,10 +123,14 @@ are held to, against a factory for your store:
 
 ```python
 from alethic.testing import store_conformance
+from itertools import count
 
-store_conformance(lambda: MyStore(...))
+nth = count()
+store_conformance(lambda: MyStore(f"conformance-{next(nth)}.db"))
 ```
 
+The factory is called more than once and must return a fresh, **empty** store
+every time — a new database per call, not another handle on the one before.
 It raises `AssertionError` on the first violation, naming what failed. See
 [`src/testing.py`](https://github.com/emiluzelac/alethic/blob/main/src/testing.py)
 for the full list of assertions.

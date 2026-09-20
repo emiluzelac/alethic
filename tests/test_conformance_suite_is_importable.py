@@ -3,14 +3,30 @@ backend author has no way to prove they honour StoreProtocol.
 """
 from __future__ import annotations
 
+from itertools import count
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import pytest
 
 from alethic import MemoryStore, SqliteStore
 from alethic.schema import Record, Slot
+from alethic.store_protocol import StoreProtocol
 from alethic.testing import store_conformance
+
+from tests.helpers import make_record
+
+
+def _sqlite_factory(tmp_path: Path) -> Callable[[], SqliteStore]:
+    """The factory this repo hands to `store_conformance` for SqliteStore.
+
+    A new database file per call: `store_conformance` calls its factory more
+    than once and documents each result as a fresh, empty store. Reusing one
+    path returns a second connection to a database the suite has already
+    written to.
+    """
+    counter = count()
+    return lambda: SqliteStore(str(tmp_path / f"conf_{next(counter)}.db"))
 
 
 def test_shipped_stores_pass_their_own_conformance_suite() -> None:
@@ -18,7 +34,42 @@ def test_shipped_stores_pass_their_own_conformance_suite() -> None:
 
 
 def test_sqlite_store_passes(tmp_path: Path) -> None:
-    store_conformance(lambda: SqliteStore(str(tmp_path / "conf.db")))
+    store_conformance(_sqlite_factory(tmp_path))
+
+
+def _assert_factory_is_empty_every_call(
+    factory: Callable[[], StoreProtocol],
+) -> None:
+    """`store_conformance` documents its factory as producing "a fresh, empty
+    store instance" and calls it more than once, with later steps assuming
+    the ids they use are free. A factory that hands back another connection
+    to a database the suite has already written to breaks that, and passes
+    only for as long as those ids happen not to collide.
+    """
+    first = factory()
+    try:
+        first.append(make_record(rec_id="percepts:factory:1", slot="percepts"))
+    finally:
+        first.close()
+
+    second = factory()
+    try:
+        assert second.list_slot("percepts") == [], (
+            "the factory returned a store still holding an earlier instance's "
+            "records; store_conformance requires a fresh, empty store per call"
+        )
+    finally:
+        second.close()
+
+
+def test_the_sqlite_conformance_factory_is_empty_every_call(tmp_path: Path) -> None:
+    _assert_factory_is_empty_every_call(_sqlite_factory(tmp_path))
+
+
+def test_the_shared_store_factory_fixture_is_empty_every_call(
+    store_factory: Callable[[], StoreProtocol],
+) -> None:
+    _assert_factory_is_empty_every_call(store_factory)
 
 
 def test_a_store_that_overwrites_ids_is_caught() -> None:

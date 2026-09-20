@@ -29,6 +29,13 @@ def _rec(rec_id: str, kind: str, trace_id: str = "conf", ttl_ms: int | None = No
 def store_conformance(store_factory: Callable[[], StoreProtocol]) -> None:
     """Assert a StoreProtocol implementation honours the whole contract.
 
+    ``store_factory`` is called more than once and must return a *fresh,
+    empty* store every time -- a new database file or directory per call, not
+    another handle on the one before. Later steps assume the ids they use are
+    free, so a factory that hands back a store the suite has already written
+    to passes only for as long as those ids happen not to collide. Every
+    instance it returns is closed, including when an assertion fails.
+
     Raises AssertionError on the first violation, naming what failed. A
     backend that passes this agrees with the shipped stores on every
     behaviour the kernel's governance decisions depend on.
