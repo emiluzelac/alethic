@@ -111,6 +111,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Belief validation-evidence entries now carry `marginal` and `severity`
   alongside `validator_id`, `code`, `detail`, and optional `context`. A
   belief validator's `marginal=True` previously vanished without trace.
+- `docs/architecture.md`'s "Writing a validator" now documents that every
+  validator runs inside the kernel's process-wide commit lock: a slow gate
+  stalls every commit on that kernel, and a gate that calls back into
+  `kernel.commit_*` deadlocks permanently. That is also why
+  `ValidationContext` carries the `store` and not the `Kernel`. Behaviour is
+  unchanged; the locking was never documented.
 - `Kernel.commit_action_from_proposal()` is now a thin wrapper over
   `decide_action()` — `ok, code = decide_action(...).ok, decide_action(...).code`
   — kept only for the existing two-tuple call sites. No migration needed;

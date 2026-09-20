@@ -178,10 +178,15 @@ class CooldownValidator:
         # find_active_by_kind is scoped to one trace, and a cooldown must see
         # earlier episodes, so scan the slot and filter. O(n) on the shipped
         # stores; a backend built for this can index on (kind, ts_ms).
+        #
+        # list_slot returns every record in the slot, whatever its status, so
+        # filter on it: a retracted or expired contact never happened and
+        # must not start a cooldown.
         previous = [
             r for r in context.store.list_slot("actions")
             if r.kind == kind
             and r.mode == "COMMIT"
+            and r.status == "ACTIVE"
             and r.prov.trace_id != context.trace_id
         ]
         if not previous:
@@ -217,10 +222,15 @@ A few things about this example that generalize to any validator:
 - `find_active_by_kind(slot, kind, trace_id)` only looks inside one
   `trace_id`, because it answers "what's active in *this* episode." A
   cooldown's whole point is to see across episodes, so this example scans
-  `list_slot("actions")` — every action ever committed, across every trace —
-  and filters by `kind`, `mode == "COMMIT"`, and a different `trace_id`
-  itself. This is O(n) on both shipped stores; a backend built to answer this
-  question at scale would index on `(kind, ts_ms)` instead.
+  `list_slot("actions")` — every action record ever written, across every
+  trace — and filters by `kind`, `mode == "COMMIT"`, `status == "ACTIVE"`,
+  and a different `trace_id` itself. `list_slot` does not filter by status
+  the way [`Kernel.current_view()`](api-reference.md#current_view) does, so
+  the status clause is not optional: without it a retracted or expired
+  contact, one that never
+  counted as having happened, still starts a cooldown. This is O(n) on both
+  shipped stores; a backend built to answer this question at scale would
+  index on `(kind, ts_ms)` instead.
 - `severity="review"` on the refusal means this gate does not want to hard
   block the action — it wants a person to decide. In `decide_action()`, that
   bubbles up to `ActionDecision.severity` only if this is a *failing* result;
@@ -232,6 +242,37 @@ A few things about this example that generalize to any validator:
 - `context.now_ms` is one clock reading shared by the whole validator chain
   for this call, not a fresh `time.time()` per validator, so two validators
   in the same chain agree on what "now" means.
+
+### Validators run under the kernel's commit lock
+
+Every kernel decision method — `commit_belief_from_proposal()`,
+`decide_action()`, `validate_plan()`, `commit_prediction()` — takes one
+process-wide commit lock (`Kernel._commit_lock`) and holds it for the whole
+decision: reading the proposal, building the view, running **every**
+validator in the chain, and writing the evidence and the committed record.
+Governance decisions are serialised on purpose, so that one decision's read
+of the view cannot interleave with another's writes. The consequence for a
+validator author is that your code runs inside the kernel's critical
+section. Two things to design around:
+
+- **Be fast.** While your validator runs, every other commit and decision on
+  that kernel is blocked, including ones for unrelated traces. A retrieval
+  call, an entailment model, or a `list_slot` scan over a large store is all
+  latency the whole kernel pays. Set your own timeouts; the kernel does not
+  impose one, and a validator that hangs stops the kernel rather than failing
+  closed. If a check cannot be made fast, make it a gate on a cheap
+  precomputed percept rather than doing the slow work inside the chain.
+- **Never re-enter the kernel.** Calling `kernel.commit_belief_from_proposal()`,
+  `kernel.decide_action()`, or anything else that takes the commit lock from
+  inside a validator deadlocks immediately and permanently — the lock is not
+  re-entrant, and the call that would release it is the one waiting. This is
+  the real reason `ValidationContext` carries the `store` and not the
+  `Kernel`: reads through `context.store` are exactly the access a validator
+  needs, and nothing on that object can take the commit lock.
+
+A validator that must do slow or kernel-touching work belongs outside the
+chain: have a worker do it, commit the answer as a percept or belief, and let
+the validator judge that.
 
 ## Role-Based Access Control
 
