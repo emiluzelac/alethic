@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import math
 import threading
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
@@ -25,6 +26,27 @@ def _rid(slot: str, n: int, trace_id: str) -> str:
 # A backstop against spinning forever if a store reports every id as taken.
 # Reached only by a store that is misbehaving, never by a busy trace.
 _MAX_ID_PROBES = 10_000
+
+
+def _for_validator(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the copy a validator is handed in place of the live object.
+
+    A validator judges a proposal; it must not be able to rewrite it. Without
+    this, every argument the chain receives is the object the kernel is about
+    to write, or -- on a store that hands out live record payloads, as
+    MemoryStore does -- an object already in the store. A validator that
+    mutated one would change what becomes state, and the audit trail would
+    record the mutated payload as if it had been proposed. It could also
+    disarm gates that run after the chain: emptying ``depends_on`` leaves the
+    percept-confidence gate nothing to check.
+
+    Each validator gets its own copy, so no gate can rewrite what a later
+    gate in the same chain is asked to judge either. The cost is a deep copy
+    per validator per decision; validators are documented as fast and
+    payloads as store-serialisable, and a governance decision that can be
+    edited by the code judging it is not a decision at all.
+    """
+    return copy.deepcopy(value)
 
 class Kernel:
     def __init__(self, min_confidence: float = 0.5,
@@ -287,7 +309,11 @@ class Kernel:
             validator_results: List[Dict[str, Any]] = []
             for validator in self._belief_validators:
                 try:
-                    res = validator.validate_belief_commit(prop.payload, view["percepts"], context)
+                    res = validator.validate_belief_commit(
+                        _for_validator(prop.payload),
+                        _for_validator(view["percepts"]),
+                        context,
+                    )
                 except Exception as exc:
                     detail = (
                         f"Belief validator {validator.validator_id!r} failed: "
@@ -513,7 +539,11 @@ class Kernel:
             for validator in self._action_validators:
                 try:
                     result = validator.validate_action(
-                        prop.payload, view["beliefs"], view["constraints"], context)
+                        _for_validator(prop.payload),
+                        _for_validator(view["beliefs"]),
+                        _for_validator(view["constraints"]),
+                        context,
+                    )
                 except Exception as exc:  # fail closed: a broken gate is a closed gate
                     detail = f"action validator {validator.validator_id!r} raised: {exc}"
                     return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,

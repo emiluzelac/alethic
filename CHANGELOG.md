@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Validators are now handed deep copies of the payload and the percept,
+  belief, and constraint views, one set per validator, instead of the
+  kernel's live objects. A validator that mutated an argument previously
+  changed what was committed — the audit trail recorded the mutated payload
+  as if it had been proposed — and could disarm gates that run after the
+  chain, such as emptying `depends_on` so the percept-confidence gate had
+  nothing to check. It also means no gate can rewrite what a later gate in
+  the same chain judges. A validator returns a verdict; that is all it can
+  change. No migration needed unless a validator relied on mutating its
+  arguments, which was never supported.
 - **Breaking:** `BeliefValidator.validate_belief_commit()` now takes a third
   positional argument, `context: ValidationContext`. Migration: add the
   parameter to every custom validator's method signature; the kernel now

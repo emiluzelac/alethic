@@ -198,6 +198,11 @@ A few things about this example that generalize to any validator:
 
 - `context.store.list_slot(...)` is a read; validators should never write to
   the store. Only the kernel writes evidence and commits records.
+- The payload, percepts, beliefs, and constraints a validator is handed are
+  deep copies made for that one validator, not the live objects. Mutating
+  them is pointless rather than dangerous: the kernel commits the original,
+  and the next gate in the chain gets its own untouched copy. A verdict is
+  the only thing a validator can change.
 - `find_active_by_kind(slot, kind, trace_id)` only looks inside one
   `trace_id`, because it answers "what's active in *this* episode." A
   cooldown's whole point is to see across episodes, so this example scans

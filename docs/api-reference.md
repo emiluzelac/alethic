@@ -332,6 +332,12 @@ class ValidationContext:
 | `trace_id` | `str` | The proposal's episode. `find_active_by_kind` is scoped to this one trace — a validator that needs history *across* traces (e.g. a cooldown) must scan `list_slot` and filter itself; see [Writing a validator](https://github.com/emiluzelac/alethic/blob/main/docs/architecture.md#writing-a-validator). |
 | `now_ms` | `int` | Milliseconds since epoch, captured once per `commit_belief_from_proposal()` / `decide_action()` call so every validator in the chain sees the same clock reading. |
 
+The other arguments — the belief payload or action, and the percepts,
+beliefs, and constraints views — are deep copies made for that one validator,
+not the kernel's live objects. A validator that mutates them changes nothing:
+the kernel commits the original, and the next gate in the chain receives its
+own untouched copy.
+
 Without this, a validator sees only dicts, which makes every history- or
 time-dependent rule impossible to express. Do not confuse this with
 `ValidationResult.context`, an unrelated `Dict[str, Any]` field a validator
