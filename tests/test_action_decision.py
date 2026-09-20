@@ -165,3 +165,46 @@ def test_belief_and_action_validation_evidence_do_not_collide() -> None:
         "the action's evidence artifact shadowed the belief's in the view"
     )
     assert evidence["validation_action_send"]["action"] == "send"
+
+
+def test_a_committed_action_records_its_validation_evidence() -> None:
+    """A refused action left an evidence artifact and a committed one left
+    none, so the decision most worth auditing -- the one that let an action
+    through -- was the one with no record. A gate's `marginal` concern
+    existed only in the returned object and was lost the moment it went out
+    of scope.
+    """
+    kernel = Kernel(action_validators=[MarginalPass()])
+    trace = "t-pass-evidence"
+    proposal_id = _propose(kernel, trace)
+
+    decision = kernel.decide_action(proposal_id, trace)
+
+    assert decision.ok is True
+    record = kernel.current_view(trace)["evidence"]["validation_action_send"]
+    assert record["action"] == "send"
+    assert record["proposal_id"] == proposal_id
+    assert record["result"] == "pass"
+    assert record["validators"] == [
+        {"validator_id": "narrow", "code": "OK", "ok": True},
+    ]
+    assert record["concerns"] == ["close to the line"], (
+        "a concern raised by a gate that let the action through must outlive "
+        "the ActionDecision object"
+    )
+
+
+def test_a_committed_action_points_at_the_evidence_that_cleared_it() -> None:
+    kernel = Kernel(action_validators=[MarginalPass()])
+    trace = "t-pass-refs"
+    kernel.decide_action(_propose(kernel, trace), trace)
+
+    committed = [r for r in kernel.store.list_slot("actions") if r.mode == "COMMIT"]
+    assert len(committed) == 1
+    assert len(committed[0].evidence_refs) == 1, (
+        "the committed action cites no validation evidence"
+    )
+    evidence = kernel.store.get(committed[0].evidence_refs[0])
+    assert evidence is not None
+    assert evidence.kind == "validation_action_send"
+    assert evidence.payload["result"] == "pass"

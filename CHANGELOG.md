@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_persistent()` and `list_by_status()` are ordered the same way, for
   the same reason: an append-only audit trail read back in an arbitrary order
   is not an audit trail.
+- A committed action now writes a `result: "pass"` validation evidence
+  artifact, and cites it in the committed record's `evidence_refs`. Only
+  refusals left evidence, so the decision that let an action through was the
+  one with no record — and a gate's `marginal` concern existed only in the
+  returned `ActionDecision`, never in the audit trail. The artifact carries
+  the ordered validator entries and the `concerns` list.
 - Action validation evidence is now written under the record kind
   `validation_action_{kind}` rather than `validation_{kind}`. Both chains
   wrote the latter, and `current_view()` keys the evidence slot by kind, so a

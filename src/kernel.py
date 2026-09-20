@@ -175,6 +175,21 @@ class Kernel:
             self.store.invalidate(proposal.id, detail)
         return False, code
 
+    def _action_validator_entries(
+        self, results: Sequence[ValidationResult]
+    ) -> List[Dict[str, Any]]:
+        """One audit entry per validator that returned a result, in chain order.
+
+        `results` is filled in chain order, so zipping it against the chain
+        pairs each validator with its own result even when the chain stopped
+        early. A validator that crashed appended no result and so is absent
+        here; callers that know of one add its entry themselves.
+        """
+        return [
+            {"validator_id": v.validator_id, "code": r.code, "ok": r.ok}
+            for v, r in zip(self._action_validators, results)
+        ]
+
     def _reject_action(
         self,
         proposal: Record,
@@ -201,10 +216,7 @@ class Kernel:
                     "proposal_id": proposal.id,
                     "result": "fail",
                     "code": code,
-                    "validators": [
-                        {"validator_id": v.validator_id, "code": r.code, "ok": r.ok}
-                        for v, r in zip(self._action_validators, results)
-                    ],
+                    "validators": self._action_validator_entries(results),
                 },
                 trace_id,
             )
@@ -568,11 +580,29 @@ class Kernel:
                                            failures[0].detail, results,
                                            severity=severity, concerns=concerns)
 
+            # One unit, and a record of the decision that let this action
+            # through. A refusal has always written evidence; a commit is the
+            # case that most needs it, and `concerns` -- a gate that passed
+            # but said it nearly did not -- exists nowhere else once the
+            # returned ActionDecision goes out of scope.
             with self.store.transaction():
+                ev_rec = self.write(
+                    "evidence_validator", "evidence", "COMMIT",
+                    f"validation_action_{prop.kind}",
+                    {
+                        "action": prop.kind,
+                        "proposal_id": prop.id,
+                        "result": "pass",
+                        "validators": self._action_validator_entries(results),
+                        "concerns": list(concerns),
+                    },
+                    trace_id,
+                )
                 self.store.invalidate(proposal_id, "SUPERSEDED_BY_COMMIT")
                 self.write(
                     "kernel", "actions", "COMMIT", prop.kind, prop.payload, trace_id,
                     input_refs=prop.prov.input_refs, confidence=prop.prov.confidence,
+                    evidence_refs=[ev_rec.id],
                 )
             return ActionDecision(ok=True, code="COMMITTED", results=tuple(results), concerns=concerns)
 

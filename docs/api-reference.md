@@ -192,6 +192,14 @@ for why the two chains disagree on this.
 the `detail` of every validator that passed with `marginal=True`, whether or
 not the overall decision succeeded.
 
+Every decision, committed or refused, writes a `validation_action_{kind}`
+record into the `evidence` slot: the ordered validator IDs with their result
+codes, `result: "pass"` or `"fail"`, and, on a pass, the `concerns`. A
+committed action cites that record in its `evidence_refs`. The kind is
+prefixed `validation_action_` rather than the belief chain's `validation_`
+because `current_view()` keys the evidence slot by kind and a belief and an
+action may share a name.
+
 #### `commit_action_from_proposal()`
 
 ```python

@@ -108,7 +108,14 @@ two-tuple wrapper over it — `ok, code = decision.ok, decision.code`):
    result, whether or not the decision as a whole succeeded.
    `ActionDecision.severity` is `"review"` if any failing validator set
    `severity="review"` on its result, otherwise `"block"`.
-4. **Commit** — On success, the proposal is superseded and a committed action record is written
+4. **Evidence recording** — Either outcome writes a `validation_action_{kind}`
+   artifact into the `evidence` slot, holding the ordered validator IDs with
+   their result codes, `result: "pass"` or `"fail"`, and — on a pass — the
+   `concerns` raised by gates that let the action through. A committed action
+   cites that artifact in its `evidence_refs`. The belief chain writes
+   `validation_{kind}`; the prefix differs because `current_view()` keys the
+   evidence slot by kind and a belief and an action may share a name.
+5. **Commit** — On success, the proposal is superseded and a committed action record is written
 
 This is the opposite of belief commitment's short-circuit, and deliberately
 so: a belief is a truth claim, where the first disqualifying reason settles
