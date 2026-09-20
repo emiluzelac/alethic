@@ -65,7 +65,11 @@ When `commit_belief_from_proposal()` is called:
 4. **Confidence gate** — Dependent percepts must have confidence >=
    `min_confidence` (default 0.5).
 5. **Evidence recording** — Success and rejection artifacts record the ordered
-   validator IDs, result codes, details, and optional context.
+   validator IDs, result codes, details, `marginal`, `severity`, and optional
+   context. This chain records `marginal` and `severity` without acting on
+   them: it returns `(bool, str)`, so it has no `concerns` to surface a
+   marginal pass in and no overall severity to raise. Only `decide_action()`
+   acts on those two fields.
 6. **Commit** — The proposal is superseded and a committed belief record is
    written.
 
@@ -221,7 +225,10 @@ A few things about this example that generalize to any validator:
   block the action — it wants a person to decide. In `decide_action()`, that
   bubbles up to `ActionDecision.severity` only if this is a *failing* result;
   a passing-but-close-to-the-line result belongs in `marginal=True` instead
-  (surfaced through `ActionDecision.concerns`), not `severity`.
+  (surfaced through `ActionDecision.concerns`), not `severity`. A
+  `BeliefValidator` may set the same two fields, and they are recorded in its
+  validation evidence, but the belief chain does not act on them — it has no
+  `concerns` and no overall severity.
 - `context.now_ms` is one clock reading shared by the whole validator chain
   for this call, not a fresh `time.time()` per validator, so two validators
   in the same chain agree on what "now" means.

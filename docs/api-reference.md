@@ -378,9 +378,11 @@ class BeliefValidator(Protocol):
 `validator_id` must be non-empty and unique within a kernel. Validators run in
 configuration order and should return an affirmative `ValidationResult` only
 when their own check passes. Exceptions and malformed return values fail
-closed. Successful and rejected results—including optional `context` such as
-supporting evidence spans or verifier votes—are written into validation
-evidence artifacts.
+closed. Successful and rejected results—including `marginal`, `severity`, and
+optional `context` such as supporting evidence spans or verifier votes—are
+written into validation evidence artifacts. The belief chain records
+`marginal` and `severity` but does not act on them; see
+[`ValidationResult`](https://github.com/emiluzelac/alethic/blob/main/docs/api-reference.md#validationresult).
 
 ### `ValidationResult`
 
@@ -393,16 +395,26 @@ class ValidationResult:
     code: str                               # Result code (e.g., "OK", "STALE_EVIDENCE")
     detail: str                             # Human-readable description
     context: Dict[str, Any] = {}            # Additional context (e.g., {"percept_key": "charge"})
-    marginal: bool = False                  # True on a pass that nearly didn't; surfaced as a `concern`
+    marginal: bool = False                  # True on a pass that nearly didn't
     severity: Literal["block", "review"] = "block"  # Meaningful only when ok=False
 ```
 
 `marginal` and `severity` are both defaulted, so existing
 `ValidationResult(...)` construction is unaffected. `severity` is only
 consulted when `ok=False`: `"block"` is a hard stop, `"review"` means the
-gate refuses but the decision belongs to a person — `Kernel.decide_action()`
-raises `ActionDecision.severity` to `"review"` if any failing validator in
-the chain says so.
+gate refuses but the decision belongs to a person.
+
+**The two chains do different things with these two fields.**
+`Kernel.decide_action()` acts on both: it collects every `marginal` pass into
+`ActionDecision.concerns` and raises `ActionDecision.severity` to `"review"`
+if any failing validator in the chain says so.
+`Kernel.commit_belief_from_proposal()` acts on neither — it returns
+`(bool, str)`, has no `concerns` to surface a marginal pass in and no overall
+severity to raise, because a belief that fails any gate simply does not enter
+state. It does record both fields in each validator's validation-evidence
+entry, so the audit trail still says what the gate said. A belief validator
+that needs a marginal pass or a review request to change an outcome has to
+express it as its own `ok`/`code`.
 
 ### `EvidenceValidator`
 

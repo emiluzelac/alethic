@@ -101,9 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `severity: Literal["block", "review"] = "block"`. Both are defaulted, so
   existing `ValidationResult(...)` construction is unaffected. `severity` is
   only meaningful when `ok=False`; `"review"` means the gate refuses but
-  wants a person to decide rather than a hard stop. `marginal=True` on a
-  passing result surfaces its detail as a `concern` even though the gate let
-  the proposal through.
+  wants a person to decide rather than a hard stop. The two chains treat
+  them differently: `decide_action()` acts on both — `marginal=True` on a
+  passing result surfaces its detail in `ActionDecision.concerns`, and a
+  failing result's `severity="review"` raises `ActionDecision.severity`.
+  `commit_belief_from_proposal()` acts on neither, having no `concerns` and
+  no overall severity to raise; it records both in each validator's
+  validation-evidence entry instead.
+- Belief validation-evidence entries now carry `marginal` and `severity`
+  alongside `validator_id`, `code`, `detail`, and optional `context`. A
+  belief validator's `marginal=True` previously vanished without trace.
 - `Kernel.commit_action_from_proposal()` is now a thin wrapper over
   `decide_action()` — `ok, code = decide_action(...).ok, decide_action(...).code`
   — kept only for the existing two-tuple call sites. No migration needed;

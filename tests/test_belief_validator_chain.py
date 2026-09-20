@@ -165,11 +165,15 @@ def test_successful_chain_is_recorded_in_validation_evidence() -> None:
             "validator_id": "structural_evidence",
             "code": "OK",
             "detail": "Belief evidence acceptable",
+            "marginal": False,
+            "severity": "block",
         },
         {
             "validator_id": "exact_entailment",
             "code": "ENTAILED",
             "detail": "Claim exactly matches cited evidence",
+            "marginal": False,
+            "severity": "block",
             "context": {
                 "supporting_value": "Paris is the capital of France.",
             },
@@ -300,3 +304,68 @@ def test_belief_validators_receive_the_context() -> None:
     kernel.commit_belief_from_proposal(proposal.id, trace)
 
     assert seen == {"trace_id": "t-ctx", "has_store": True}
+
+
+class MarginalPassValidator:
+    """Passes, but says it nearly did not."""
+
+    validator_id = "narrow"
+
+    def validate_belief_commit(
+        self,
+        belief_payload: Dict[str, Any],
+        percepts: Dict[str, Any],
+        context: ValidationContext,
+    ) -> ValidationResult:
+        return ValidationResult(True, "OK", "close to the line", marginal=True)
+
+
+class ReviewRejectingValidator:
+    """Refuses, but says the decision belongs to a person."""
+
+    validator_id = "needs_a_person"
+
+    def validate_belief_commit(
+        self,
+        belief_payload: Dict[str, Any],
+        percepts: Dict[str, Any],
+        context: ValidationContext,
+    ) -> ValidationResult:
+        return ValidationResult(False, "NEEDS_REVIEW", "a person should decide",
+                                severity="review")
+
+
+def test_a_marginal_belief_pass_is_recorded_in_the_evidence() -> None:
+    """`marginal` and `severity` live on the one `ValidationResult` both
+    protocols return, but only the action chain ever read them: a belief
+    validator's `marginal=True` vanished silently, unsurfaced and unrecorded.
+    The belief chain does not act on either field -- it has no `concerns` and
+    no `severity` to raise -- but the audit trail must still say what the
+    gate said."""
+    kernel = Kernel(belief_validators=[MarginalPassValidator()])
+    proposal = propose_claim(kernel, "marginal-belief")
+
+    assert kernel.commit_belief_from_proposal(
+        proposal.id, "marginal-belief") == (True, "COMMITTED")
+
+    entry = kernel.current_view("marginal-belief")[
+        "evidence"]["validation_capital"]["validators"][0]
+    assert entry["marginal"] is True, (
+        f"the gate's marginal pass left no trace in the evidence: {entry!r}"
+    )
+    assert entry["severity"] == "block"
+
+
+def test_a_review_severity_belief_rejection_is_recorded_in_the_evidence() -> None:
+    kernel = Kernel(belief_validators=[ReviewRejectingValidator()])
+    proposal = propose_claim(kernel, "review-belief")
+
+    committed, code = kernel.commit_belief_from_proposal(proposal.id, "review-belief")
+
+    assert (committed, code) == (False, "NEEDS_REVIEW")
+    entry = kernel.current_view("review-belief")[
+        "evidence"]["validation_capital"]["validators"][0]
+    assert entry["severity"] == "review", (
+        f"the gate asked for a person and the evidence does not say so: {entry!r}"
+    )
+    assert entry["marginal"] is False

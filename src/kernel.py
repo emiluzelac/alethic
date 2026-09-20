@@ -373,10 +373,18 @@ class Kernel:
                         prop, trace_id, "VALIDATOR_ERROR", detail, validator_results
                     )
 
+                # `marginal` and `severity` are recorded but not acted on
+                # here: this chain has no `concerns` to surface them in and
+                # no overall severity to raise, because a belief that fails
+                # any gate simply does not enter state. Recording them keeps
+                # the audit trail honest about what each gate actually said,
+                # rather than silently dropping half of its result.
                 result_record: Dict[str, Any] = {
                     "validator_id": validator.validator_id,
                     "code": res.code,
                     "detail": res.detail,
+                    "marginal": res.marginal,
+                    "severity": res.severity,
                 }
                 if res.context:
                     result_record["context"] = res.context
