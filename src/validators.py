@@ -1,13 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, Protocol
+from typing import Any, Dict, Literal, Protocol
 
+# severity is only meaningful when ok is False. "block" means the kernel
+# refuses. "review" means it refuses and the decision belongs to a person.
+# The kernel never interprets these beyond passing them back to the caller.
 @dataclass
 class ValidationResult:
     ok: bool
     code: str
     detail: str
     context: Dict[str, Any] = field(default_factory=dict)
+    marginal: bool = False
+    severity: Literal["block", "review"] = "block"
 
 
 class BeliefValidator(Protocol):

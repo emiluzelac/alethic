@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from alethic.validators import EvidenceValidator, SymbolicValidator, ValidationResult
+from alethic import ValidationResult
+from alethic.validators import EvidenceValidator, SymbolicValidator
 
 
 class TestEvidenceValidator:
@@ -146,3 +147,21 @@ class TestValidationResult:
         vr = ValidationResult(ok=False, code="ERR", detail="bad",
                               context={"key": "val"})
         assert vr.context["key"] == "val"
+
+
+def test_validation_result_defaults_to_blocking_and_not_marginal() -> None:
+    result = ValidationResult(False, "NOPE", "no")
+    assert result.marginal is False
+    assert result.severity == "block"
+
+
+def test_validation_result_can_ask_for_human_review() -> None:
+    result = ValidationResult(False, "NEEDS_A_PERSON", "judgement call", severity="review")
+    assert result.severity == "review"
+
+
+def test_a_passing_result_can_still_be_marginal() -> None:
+    """Passed, but close enough to the line that a caller may want to say so."""
+    result = ValidationResult(True, "OK", "within tolerance", marginal=True)
+    assert result.ok is True
+    assert result.marginal is True
