@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version as _version
 
+from .context import ValidationContext
 from .kernel import Kernel
 from .schema import Provenance, Record, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
@@ -41,6 +42,7 @@ __all__ = [
     "SqliteStore",
     "StoreProtocol",
     "SymbolicValidator",
+    "ValidationContext",
     "ValidationResult",
     "Worker",
     "WriteMode",
