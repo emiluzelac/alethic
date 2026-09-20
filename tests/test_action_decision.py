@@ -255,3 +255,62 @@ def test_a_negative_prediction_refusal_says_why() -> None:
     refused = kernel.store.get(proposal_id)
     assert refused is not None
     assert refused.reason == decision.reasons[0]
+
+
+class Exploding:
+    def __init__(self, validator_id: str) -> None:
+        self.validator_id = validator_id
+
+    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any],
+                        constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
+        raise RuntimeError("kaboom")
+
+
+class WrongReturn:
+    validator_id = "garbage"
+
+    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any],
+                        constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
+        return "nope"  # type: ignore[return-value]
+
+
+def test_the_evidence_names_the_validator_that_crashed() -> None:
+    """A crashing validator appended no result, so it was absent from the
+    evidence artifact's `validators` list entirely and a person reading that
+    list concluded the gate never ran. The belief chain records an explicit
+    VALIDATOR_ERROR entry; the action chain must too.
+    """
+    kernel = Kernel(action_validators=[Failing("gate_a", "A_NO"), Exploding("gate_b")])
+    trace = "t-crash-evidence"
+
+    decision = kernel.decide_action(_propose(kernel, trace), trace)
+
+    assert decision.code == "VALIDATOR_ERROR"
+    record = kernel.current_view(trace)["evidence"]["validation_action_send"]
+    assert record["validators"] == [
+        {"validator_id": "gate_a", "code": "A_NO", "ok": False},
+        {
+            "validator_id": "gate_b",
+            "code": "VALIDATOR_ERROR",
+            "ok": False,
+            "detail": "action validator 'gate_b' raised: kaboom",
+        },
+    ]
+
+
+def test_the_evidence_names_the_validator_that_returned_garbage() -> None:
+    kernel = Kernel(action_validators=[WrongReturn()])
+    trace = "t-garbage-evidence"
+
+    decision = kernel.decide_action(_propose(kernel, trace), trace)
+
+    assert decision.code == "VALIDATOR_ERROR"
+    record = kernel.current_view(trace)["evidence"]["validation_action_send"]
+    assert record["validators"] == [
+        {
+            "validator_id": "garbage",
+            "code": "VALIDATOR_ERROR",
+            "ok": False,
+            "detail": "action validator 'garbage' returned str, not ValidationResult",
+        },
+    ]

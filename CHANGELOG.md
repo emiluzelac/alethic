@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_persistent()` and `list_by_status()` are ordered the same way, for
   the same reason: an append-only audit trail read back in an arbitrary order
   is not an audit trail.
+- An action `VALIDATOR_ERROR` evidence artifact now names the validator that
+  raised or returned the wrong type, as an explicit
+  `{"validator_id", "code": "VALIDATOR_ERROR", "ok": false, "detail"}` entry.
+  The crashing validator appended no result, so it was missing from the
+  `validators` list entirely and a person reading that list concluded it
+  never ran. The belief chain already recorded this entry.
 - `decide_action()`'s three pre-chain refusals — `INVALID_ACTION_PROPOSAL`,
   `NO_PREDICTION`, and `NEGATIVE_PREDICTION` — now populate `reasons`. Two of
   them already computed the sentence and wrote it into the proposal's

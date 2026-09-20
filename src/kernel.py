@@ -199,8 +199,24 @@ class Kernel:
         results: List[ValidationResult],
         severity: Literal["block", "review"] = "block",
         concerns: Tuple[str, ...] = (),
+        failed_validator_id: Optional[str] = None,
     ) -> ActionDecision:
-        """Atomically record the failed gates and invalidate the proposal."""
+        """Atomically record the failed gates and invalidate the proposal.
+
+        ``failed_validator_id`` names a validator that raised or returned the
+        wrong type. It appended no result, so without an explicit entry it is
+        absent from the evidence altogether and a person reading the
+        ``validators`` list concludes it never ran. The belief chain records
+        the same entry for the same reason.
+        """
+        validator_entries = self._action_validator_entries(results)
+        if failed_validator_id is not None:
+            validator_entries.append({
+                "validator_id": failed_validator_id,
+                "code": "VALIDATOR_ERROR",
+                "ok": False,
+                "detail": detail,
+            })
         with self.store.transaction():
             self.write(
                 "evidence_validator",
@@ -216,7 +232,7 @@ class Kernel:
                     "proposal_id": proposal.id,
                     "result": "fail",
                     "code": code,
-                    "validators": self._action_validator_entries(results),
+                    "validators": validator_entries,
                 },
                 trace_id,
             )
@@ -573,12 +589,14 @@ class Kernel:
                 except Exception as exc:  # fail closed: a broken gate is a closed gate
                     detail = f"action validator {validator.validator_id!r} raised: {exc}"
                     return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
-                                               concerns=concerns_so_far())
+                                               concerns=concerns_so_far(),
+                                               failed_validator_id=validator.validator_id)
                 if not isinstance(result, ValidationResult):
                     detail = (f"action validator {validator.validator_id!r} returned "
                               f"{type(result).__name__}, not ValidationResult")
                     return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
-                                               concerns=concerns_so_far())
+                                               concerns=concerns_so_far(),
+                                               failed_validator_id=validator.validator_id)
                 results.append(result)
 
             failures = [r for r in results if not r.ok]
