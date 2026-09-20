@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_persistent()` and `list_by_status()` are ordered the same way, for
   the same reason: an append-only audit trail read back in an arbitrary order
   is not an audit trail.
+- Action validation evidence is now written under the record kind
+  `validation_action_{kind}` rather than `validation_{kind}`. Both chains
+  wrote the latter, and `current_view()` keys the evidence slot by kind, so a
+  belief and an action sharing a name produced two artifacts under one key
+  and the action's shadowed the belief's. Both always survived in
+  `list_slot("evidence")`; only the view was lossy. Code that reads action
+  validation evidence out of `current_view()` by key must use the new name.
 - `alethic.testing.store_conformance()`'s append-order check now uses records
   of differing `kind`. It previously appended three records sharing one kind,
   the single shape where kind order and append order agree, so it asserted a

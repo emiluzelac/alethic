@@ -107,7 +107,7 @@ def test_the_evidence_record_pairs_each_validator_with_its_own_result_in_order()
 
     assert decision.ok is False
     view = kernel.current_view(trace)
-    record = view["evidence"]["validation_send"]
+    record = view["evidence"]["validation_action_send"]
     assert record["validators"] == [
         {"validator_id": "a", "code": "A_SAID_NO", "ok": False},
         {"validator_id": "narrow", "code": "OK", "ok": True},
@@ -141,3 +141,27 @@ def test_a_marginal_pass_survives_a_later_crash() -> None:
     assert decision.ok is False
     assert decision.code == "VALIDATOR_ERROR"
     assert decision.concerns == ("close to the line",)
+
+
+def test_belief_and_action_validation_evidence_do_not_collide() -> None:
+    """Both chains write into the `evidence` slot, and `current_view()` keys
+    that slot by kind, so a belief and an action sharing a name used to
+    produce two artifacts under one key -- the action's shadowed the
+    belief's, and a reader of the view saw only one of the two decisions.
+    """
+    kernel = Kernel(action_validators=[Failing("a", "A_SAID_NO")])
+    trace = "t-collide"
+    kernel.write("tool", "percepts", "COMMIT", "src", {"value": 1}, trace)
+    belief = kernel.write(
+        "planner", "beliefs", "PROPOSE", "send",
+        {"value": 1, "depends_on": ["src"]}, trace,
+    )
+    assert kernel.commit_belief_from_proposal(belief.id, trace) == (True, "COMMITTED")
+
+    kernel.decide_action(_propose(kernel, trace), trace)
+
+    evidence = kernel.current_view(trace)["evidence"]
+    assert evidence["validation_send"]["belief"] == "send", (
+        "the action's evidence artifact shadowed the belief's in the view"
+    )
+    assert evidence["validation_action_send"]["action"] == "send"

@@ -191,7 +191,11 @@ class Kernel:
                 "evidence_validator",
                 "evidence",
                 "COMMIT",
-                f"validation_{proposal.kind}",
+                # Distinct from the belief chain's `validation_{kind}`:
+                # current_view() keys the evidence slot by kind, so a belief
+                # and an action sharing a name would otherwise shadow each
+                # other and a reader would see only one of the two decisions.
+                f"validation_action_{proposal.kind}",
                 {
                     "action": proposal.kind,
                     "proposal_id": proposal.id,
