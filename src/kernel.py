@@ -1,14 +1,23 @@
 from __future__ import annotations
+import copy
 import math
 import threading
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import time
 
+from .context import ValidationContext
+from .decision import ActionDecision
 from .schema import Record, Provenance, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .permissions import PERMISSIONS, Role
-from .validators import EvidenceValidator, SymbolicValidator
+from .validators import (
+    ActionValidator,
+    BeliefValidator,
+    EvidenceValidator,
+    SymbolicValidator,
+    ValidationResult,
+)
 
 def _rid(slot: str, n: int, trace_id: str) -> str:
     return f"{slot}:{trace_id}:{n}"
@@ -18,18 +27,120 @@ def _rid(slot: str, n: int, trace_id: str) -> str:
 # Reached only by a store that is misbehaving, never by a busy trace.
 _MAX_ID_PROBES = 10_000
 
+
+def _for_validator(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the copy a validator is handed in place of the live object.
+
+    A validator judges a proposal; it must not be able to rewrite it. Without
+    this, every argument the chain receives is the object the kernel is about
+    to write, or -- on a store that hands out live record payloads, as
+    MemoryStore does -- an object already in the store. A validator that
+    mutated one would change what becomes state, and the audit trail would
+    record the mutated payload as if it had been proposed. It could also
+    disarm gates that run after the chain: emptying ``depends_on`` leaves the
+    percept-confidence gate nothing to check.
+
+    Each validator gets its own copy, so no gate can rewrite what a later
+    gate in the same chain is asked to judge either. The cost is a deep copy
+    per validator per decision; validators are documented as fast and
+    payloads as store-serialisable, and a governance decision that can be
+    edited by the code judging it is not a decision at all.
+    """
+    return copy.deepcopy(value)
+
 class Kernel:
     def __init__(self, min_confidence: float = 0.5,
                  conflict_confidence_threshold: float = 0.7,
-                 store: Optional[StoreProtocol] = None) -> None:
+                 store: Optional[StoreProtocol] = None,
+                 *,
+                 belief_validators: Optional[Sequence[BeliefValidator]] = None,
+                 action_validators: Optional[Sequence[ActionValidator]] = None) -> None:
         self.store: StoreProtocol = store if store is not None else MemoryStore()
         self._counters: Dict[str, int] = {}
         self._counter_lock = threading.Lock()
         self._commit_lock = threading.Lock()
-        self.evidence_validator = EvidenceValidator()
-        self.symbolic_validator = SymbolicValidator()
+        self._belief_validators = self._prepare_belief_validators(belief_validators)
+        self._action_validators = self._prepare_action_validators(action_validators)
         self.min_confidence = min_confidence
         self.conflict_confidence_threshold = conflict_confidence_threshold
+
+    @staticmethod
+    def _prepare_belief_validators(
+        validators: Optional[Sequence[BeliefValidator]],
+    ) -> Tuple[BeliefValidator, ...]:
+        configured = list(validators) if validators is not None else [EvidenceValidator()]
+        if not configured:
+            raise ValueError("belief_validators must contain at least one validator")
+        seen: set[str] = set()
+        for validator in configured:
+            validator_id = getattr(validator, "validator_id", None)
+            validate = getattr(validator, "validate_belief_commit", None)
+            if not isinstance(validator_id, str) or not validator_id.strip():
+                raise TypeError("each belief validator must define a non-empty validator_id")
+            if not callable(validate):
+                raise TypeError(
+                    f"belief validator {validator_id!r} must define validate_belief_commit()"
+                )
+            if validator_id in seen:
+                raise ValueError(f"duplicate belief validator id: {validator_id!r}")
+            seen.add(validator_id)
+        return tuple(configured)
+
+    @property
+    def belief_validators(self) -> Tuple[BeliefValidator, ...]:
+        """The immutable ordered chain applied to every belief proposal."""
+        return self._belief_validators
+
+    @property
+    def evidence_validator(self) -> BeliefValidator:
+        """Compatibility alias for the first configured belief validator."""
+        return self._belief_validators[0]
+
+    @evidence_validator.setter
+    def evidence_validator(self, validator: BeliefValidator) -> None:
+        """Replace the first validator while retaining the remainder of the chain."""
+        self._belief_validators = self._prepare_belief_validators(
+            [validator, *self._belief_validators[1:]]
+        )
+
+    @staticmethod
+    def _prepare_action_validators(
+        validators: Optional[Sequence[ActionValidator]],
+    ) -> Tuple[ActionValidator, ...]:
+        configured = list(validators) if validators is not None else [SymbolicValidator()]
+        if not configured:
+            raise ValueError("action_validators must contain at least one validator")
+        seen: set[str] = set()
+        for validator in configured:
+            validator_id = getattr(validator, "validator_id", None)
+            validate = getattr(validator, "validate_action", None)
+            if not isinstance(validator_id, str) or not validator_id.strip():
+                raise TypeError("each action validator must define a non-empty validator_id")
+            if not callable(validate):
+                raise TypeError(
+                    f"action validator {validator_id!r} must define validate_action()"
+                )
+            if validator_id in seen:
+                raise ValueError(f"duplicate action validator id: {validator_id!r}")
+            seen.add(validator_id)
+        return tuple(configured)
+
+    @property
+    def action_validators(self) -> Tuple[ActionValidator, ...]:
+        """The immutable ordered chain applied to every action proposal."""
+        return self._action_validators
+
+    @property
+    def symbolic_validator(self) -> ActionValidator:
+        """Compatibility alias for the first configured action validator."""
+        return self._action_validators[0]
+
+    @symbolic_validator.setter
+    def symbolic_validator(self, validator: ActionValidator) -> None:
+        """Replace the first validator while retaining the remainder of the chain."""
+        self._action_validators = self._prepare_action_validators(
+            [validator, *self._action_validators[1:]]
+        )
 
     def _next_id(self, slot: str, trace_id: str) -> str:
         key = f"{slot}:{trace_id}"
@@ -37,6 +148,112 @@ class Kernel:
             self._counters[key] = self._counters.get(key, 0) + 1
             return _rid(slot, self._counters[key], trace_id)
 
+    def _reject_belief_proposal(
+        self,
+        proposal: Record,
+        trace_id: str,
+        code: str,
+        detail: str,
+        validator_results: List[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        """Atomically record a failed gate and invalidate its proposal."""
+        with self.store.transaction():
+            self.write(
+                "evidence_validator",
+                "evidence",
+                "COMMIT",
+                f"validation_{proposal.kind}",
+                {
+                    "belief": proposal.kind,
+                    "proposal_id": proposal.id,
+                    "result": "fail",
+                    "code": code,
+                    "validators": validator_results,
+                },
+                trace_id,
+            )
+            self.store.invalidate(proposal.id, detail)
+        return False, code
+
+    def _action_validator_entries(
+        self, results: Sequence[ValidationResult]
+    ) -> List[Dict[str, Any]]:
+        """One audit entry per validator that returned a result, in chain order.
+
+        `results` is filled in chain order, so zipping it against the chain
+        pairs each validator with its own result even when the chain stopped
+        early. A validator that crashed appended no result and so is absent
+        here; callers that know of one add its entry themselves.
+        """
+        return [
+            {"validator_id": v.validator_id, "code": r.code, "ok": r.ok}
+            for v, r in zip(self._action_validators, results)
+        ]
+
+    def _reject_action(
+        self,
+        proposal: Record,
+        trace_id: str,
+        code: str,
+        detail: str,
+        results: List[ValidationResult],
+        severity: Literal["block", "review"] = "block",
+        concerns: Tuple[str, ...] = (),
+        failed_validator_id: Optional[str] = None,
+    ) -> ActionDecision:
+        """Atomically record the failed gates and invalidate the proposal.
+
+        ``failed_validator_id`` names a validator that raised or returned the
+        wrong type. It appended no result, so without an explicit entry it is
+        absent from the evidence altogether and a person reading the
+        ``validators`` list concludes it never ran. The belief chain records
+        the same entry for the same reason.
+        """
+        validator_entries = self._action_validator_entries(results)
+        if failed_validator_id is not None:
+            validator_entries.append({
+                "validator_id": failed_validator_id,
+                "code": "VALIDATOR_ERROR",
+                "ok": False,
+                "detail": detail,
+            })
+        with self.store.transaction():
+            self.write(
+                "evidence_validator",
+                "evidence",
+                "COMMIT",
+                # Distinct from the belief chain's `validation_{kind}`:
+                # current_view() keys the evidence slot by kind, so a belief
+                # and an action sharing a name would otherwise shadow each
+                # other and a reader would see only one of the two decisions.
+                f"validation_action_{proposal.kind}",
+                {
+                    "action": proposal.kind,
+                    "proposal_id": proposal.id,
+                    "result": "fail",
+                    "code": code,
+                    "validators": validator_entries,
+                },
+                trace_id,
+            )
+            self.store.invalidate(proposal.id, detail)
+        # `detail` is the reason this call was made -- for a gate that failed
+        # cleanly it already equals that gate's own result.detail and so is
+        # already in `reasons`; for a validator that raised or returned
+        # garbage, no result was appended for it, so `detail` is the *only*
+        # place that failure is recorded and must not be dropped just
+        # because an earlier gate in the same chain also failed.
+        reasons = tuple(r.detail for r in results if not r.ok)
+        if detail not in reasons:
+            reasons += (detail,)
+        return ActionDecision(
+            ok=False,
+            code=code,
+            results=tuple(results),
+            reasons=reasons,
+            concerns=concerns,
+            severity=severity,
+        )
 
     def write(self, role: Role, slot: Slot, mode: WriteMode, kind: str, payload: Dict[str, Any],
               trace_id: str, input_refs: Optional[List[str]] = None, confidence: Optional[float] = None,
@@ -104,28 +321,101 @@ class Kernel:
     # ── belief commitment with evidence validation ──────────────────────
 
     def commit_belief_from_proposal(self, proposal_id: str, trace_id: str) -> Tuple[bool, str]:
+        """Run belief validators in order, stopping at the first failure.
+
+        Unlike ``decide_action`` — which runs its whole chain to completion —
+        this stops at the first failing gate. That asymmetry is deliberate:
+        a belief is a truth claim, where the first disqualifying reason
+        settles it, while an action decision goes to a person who needs the
+        full picture. Do not make this run-to-completion like the action
+        chain; the short-circuit here is intentional.
+        """
         with self._commit_lock:
             prop = self.store.get(proposal_id)
             if not prop or prop.status != "ACTIVE" or prop.slot != "beliefs" or prop.mode != "PROPOSE":
                 return False, "INVALID_PROPOSAL"
 
             view = self.current_view(trace_id)
-            res = self.evidence_validator.validate_belief_commit(prop.payload, view["percepts"])
+            context = ValidationContext(store=self.store, trace_id=trace_id,
+                                        now_ms=int(time.time() * 1000))
+            validator_results: List[Dict[str, Any]] = []
+            for validator in self._belief_validators:
+                try:
+                    res = validator.validate_belief_commit(
+                        _for_validator(prop.payload),
+                        _for_validator(view["percepts"]),
+                        context,
+                    )
+                except Exception as exc:
+                    detail = (
+                        f"Belief validator {validator.validator_id!r} failed: "
+                        f"{type(exc).__name__}"
+                    )
+                    validator_results.append({
+                        "validator_id": validator.validator_id,
+                        "code": "VALIDATOR_ERROR",
+                        "detail": detail,
+                    })
+                    return self._reject_belief_proposal(
+                        prop, trace_id, "VALIDATOR_ERROR", detail, validator_results
+                    )
+                if not isinstance(res, ValidationResult):
+                    detail = (
+                        f"Belief validator {validator.validator_id!r} returned "
+                        f"{type(res).__name__}, expected ValidationResult"
+                    )
+                    validator_results.append({
+                        "validator_id": validator.validator_id,
+                        "code": "VALIDATOR_ERROR",
+                        "detail": detail,
+                    })
+                    return self._reject_belief_proposal(
+                        prop, trace_id, "VALIDATOR_ERROR", detail, validator_results
+                    )
 
-            if not res.ok:
-                # conflict arbitration: high-confidence source overrides conflict
-                if res.code == "CONFLICTING_EVIDENCE":
-                    dep_key = res.context.get("percept_key")
-                    dep_rec = self.store.find_active_by_kind("percepts", dep_key, trace_id) if dep_key else None
-                    if (dep_rec and dep_rec.prov.confidence is not None
-                            and dep_rec.prov.confidence >= self.conflict_confidence_threshold):
-                        pass  # arbitrated — proceed
-                    else:
-                        self.store.invalidate(proposal_id, res.detail)
-                        return False, "UNRESOLVED_CONFLICT"
-                else:
-                    self.store.invalidate(proposal_id, res.detail)
-                    return False, res.code
+                # `marginal` and `severity` are recorded but not acted on
+                # here: this chain has no `concerns` to surface them in and
+                # no overall severity to raise, because a belief that fails
+                # any gate simply does not enter state. Recording them keeps
+                # the audit trail honest about what each gate actually said,
+                # rather than silently dropping half of its result.
+                result_record: Dict[str, Any] = {
+                    "validator_id": validator.validator_id,
+                    "code": res.code,
+                    "detail": res.detail,
+                    "marginal": res.marginal,
+                    "severity": res.severity,
+                }
+                if res.context:
+                    result_record["context"] = res.context
+
+                if not res.ok:
+                    # conflict arbitration: high-confidence source overrides conflict
+                    if res.code == "CONFLICTING_EVIDENCE":
+                        dep_key = res.context.get("percept_key")
+                        dep_rec = self.store.find_active_by_kind(
+                            "percepts", dep_key, trace_id
+                        ) if dep_key else None
+                        if (dep_rec and dep_rec.prov.confidence is not None
+                                and dep_rec.prov.confidence
+                                >= self.conflict_confidence_threshold):
+                            result_record["code"] = "CONFLICT_ARBITRATED"
+                            validator_results.append(result_record)
+                            continue
+                        result_record["code"] = "UNRESOLVED_CONFLICT"
+                        validator_results.append(result_record)
+                        return self._reject_belief_proposal(
+                            prop,
+                            trace_id,
+                            "UNRESOLVED_CONFLICT",
+                            res.detail,
+                            validator_results,
+                        )
+                    validator_results.append(result_record)
+                    return self._reject_belief_proposal(
+                        prop, trace_id, res.code, res.detail, validator_results
+                    )
+                validator_results.append(result_record)
 
             # confidence gate on dependent percepts
             for dep_kind in prop.payload.get("depends_on", []):
@@ -135,8 +425,20 @@ class Kernel:
                     # An unknown confidence is exactly what this gate is for, so
                     # NaN must fail it rather than slip through `conf < min`.
                     if math.isnan(conf) or conf < self.min_confidence:
-                        self.store.invalidate(proposal_id, f"Low confidence on percept: {dep_kind}")
-                        return False, "LOW_CONFIDENCE"
+                        detail = f"Low confidence on percept: {dep_kind}"
+                        validator_results.append({
+                            "validator_id": "percept_confidence",
+                            "code": "LOW_CONFIDENCE",
+                            "detail": detail,
+                            "context": {"percept_key": dep_kind},
+                        })
+                        return self._reject_belief_proposal(
+                            prop,
+                            trace_id,
+                            "LOW_CONFIDENCE",
+                            detail,
+                            validator_results,
+                        )
 
             # record evidence artifact
             checks = ["existence", "staleness", "conflict"]
@@ -152,7 +454,12 @@ class Kernel:
                 ev_rec = self.write(
                     "evidence_validator", "evidence", "COMMIT",
                     f"validation_{prop.kind}",
-                    {"belief": prop.kind, "result": "pass", "checks": checks},
+                    {
+                        "belief": prop.kind,
+                        "result": "pass",
+                        "checks": checks,
+                        "validators": validator_results,
+                    },
                     trace_id,
                 )
                 self.store.invalidate(proposal_id, "SUPERSEDED_BY_COMMIT")
@@ -222,12 +529,30 @@ class Kernel:
 
     # ── action commitment with symbolic validation ──────────────────────
 
-    def commit_action_from_proposal(self, proposal_id: str, trace_id: str,
-                                    require_prediction: bool = False) -> Tuple[bool, str]:
+    def decide_action(self, proposal_id: str, trace_id: str,
+                      require_prediction: bool = False) -> ActionDecision:
+        """Run every action validator to completion and report all of it.
+
+        Unlike ``commit_belief_from_proposal`` — which stops at the first
+        failing gate because a belief is a truth claim and the first
+        disqualifying reason settles it — this runs the *whole* chain even
+        after a gate fails. An action decision goes to a person who needs
+        the full picture: every reason it was refused, and every gate that
+        passed only narrowly. Do not make this short-circuit like the
+        belief chain; that asymmetry is intentional.
+        """
         with self._commit_lock:
             prop = self.store.get(proposal_id)
             if not prop or prop.status != "ACTIVE" or prop.slot != "actions" or prop.mode != "PROPOSE":
-                return False, "INVALID_ACTION_PROPOSAL"
+                # Every refusal names itself. These three gates run before the
+                # validator chain, so they have no ValidationResult to draw a
+                # reason from -- without this they refused in silence, in a
+                # field documented as why it was refused.
+                return ActionDecision(
+                    ok=False,
+                    code="INVALID_ACTION_PROPOSAL",
+                    reasons=(f"Not an active action proposal: {proposal_id}",),
+                )
             view = self.current_view(trace_id)
 
             # optional prediction gate
@@ -240,22 +565,85 @@ class Kernel:
                         matched = pval
                         break
                 if matched is None:
-                    self.store.invalidate(proposal_id,
-                                          f"No prediction for action type: {action_type}")
-                    return False, "NO_PREDICTION"
+                    detail = f"No prediction for action type: {action_type}"
+                    self.store.invalidate(proposal_id, detail)
+                    return ActionDecision(ok=False, code="NO_PREDICTION",
+                                          reasons=(detail,))
                 if matched.get("expected_outcome", 0) < 0:
-                    self.store.invalidate(proposal_id,
-                                          f"Prediction negative for: {action_type}")
-                    return False, "NEGATIVE_PREDICTION"
+                    detail = f"Prediction negative for: {action_type}"
+                    self.store.invalidate(proposal_id, detail)
+                    return ActionDecision(ok=False, code="NEGATIVE_PREDICTION",
+                                          reasons=(detail,))
 
-            res = self.symbolic_validator.validate_action(prop.payload, view["beliefs"], view["constraints"])
-            if not res.ok:
-                self.store.invalidate(proposal_id, res.detail)
-                return False, res.code
+            context = ValidationContext(store=self.store, trace_id=trace_id,
+                                        now_ms=int(time.time() * 1000))
+            results: List[ValidationResult] = []
+
+            def concerns_so_far() -> Tuple[str, ...]:
+                # A concern from a validator that already ran must survive
+                # even when a later validator in the same chain aborts the
+                # loop -- `ActionDecision.concerns` is collected regardless
+                # of whether the overall decision succeeds.
+                return tuple(r.detail for r in results if r.ok and r.marginal)
+
+            for validator in self._action_validators:
+                try:
+                    result = validator.validate_action(
+                        _for_validator(prop.payload),
+                        _for_validator(view["beliefs"]),
+                        _for_validator(view["constraints"]),
+                        context,
+                    )
+                except Exception as exc:  # fail closed: a broken gate is a closed gate
+                    detail = f"action validator {validator.validator_id!r} raised: {exc}"
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
+                                               concerns=concerns_so_far(),
+                                               failed_validator_id=validator.validator_id)
+                if not isinstance(result, ValidationResult):
+                    detail = (f"action validator {validator.validator_id!r} returned "
+                              f"{type(result).__name__}, not ValidationResult")
+                    return self._reject_action(prop, trace_id, "VALIDATOR_ERROR", detail, results,
+                                               concerns=concerns_so_far(),
+                                               failed_validator_id=validator.validator_id)
+                results.append(result)
+
+            failures = [r for r in results if not r.ok]
+            concerns = concerns_so_far()
+            if failures:
+                severity: Literal["block", "review"] = (
+                    "review" if any(r.severity == "review" for r in failures) else "block")
+                return self._reject_action(prop, trace_id, failures[0].code,
+                                           failures[0].detail, results,
+                                           severity=severity, concerns=concerns)
+
+            # One unit, and a record of the decision that let this action
+            # through. A refusal has always written evidence; a commit is the
+            # case that most needs it, and `concerns` -- a gate that passed
+            # but said it nearly did not -- exists nowhere else once the
+            # returned ActionDecision goes out of scope.
             with self.store.transaction():
+                ev_rec = self.write(
+                    "evidence_validator", "evidence", "COMMIT",
+                    f"validation_action_{prop.kind}",
+                    {
+                        "action": prop.kind,
+                        "proposal_id": prop.id,
+                        "result": "pass",
+                        "validators": self._action_validator_entries(results),
+                        "concerns": list(concerns),
+                    },
+                    trace_id,
+                )
                 self.store.invalidate(proposal_id, "SUPERSEDED_BY_COMMIT")
                 self.write(
                     "kernel", "actions", "COMMIT", prop.kind, prop.payload, trace_id,
                     input_refs=prop.prov.input_refs, confidence=prop.prov.confidence,
+                    evidence_refs=[ev_rec.id],
                 )
-            return True, "COMMITTED"
+            return ActionDecision(ok=True, code="COMMITTED", results=tuple(results), concerns=concerns)
+
+    def commit_action_from_proposal(self, proposal_id: str, trace_id: str,
+                                    require_prediction: bool = False) -> Tuple[bool, str]:
+        """Back-compatible two-tuple view of :meth:`decide_action`."""
+        decision = self.decide_action(proposal_id, trace_id, require_prediction)
+        return decision.ok, decision.code

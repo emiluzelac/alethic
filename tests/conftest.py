@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from itertools import count
+from typing import Callable
+
 import pytest
 
 from alethic.kernel import Kernel
 from alethic.store import MemoryStore
 from alethic.sqlite_store import SqliteStore
+from alethic.store_protocol import StoreProtocol
 
 
 @pytest.fixture(params=["memory", "sqlite"])
@@ -47,6 +51,26 @@ def store(request, tmp_path):
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture(params=["memory", "sqlite"])
+def store_factory(request, tmp_path) -> Callable[[], StoreProtocol]:
+    """A factory for either StoreProtocol implementation.
+
+    For tests that call store_conformance, which needs to create several
+    independent store instances within a single call, rather than a single
+    already-constructed store.
+
+    Each call gets its own database file. store_conformance documents every
+    result as a fresh, empty store and its later steps assume the ids they
+    use are free; one shared path returns a second connection to a database
+    the suite has already written to, and passes only for as long as those
+    ids happen not to collide.
+    """
+    if request.param == "memory":
+        return MemoryStore
+    counter = count()
+    return lambda: SqliteStore(str(tmp_path / f"store_factory_{next(counter)}.db"))
 
 
 @pytest.fixture

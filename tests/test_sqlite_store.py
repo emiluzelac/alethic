@@ -161,3 +161,52 @@ class TestSqliteStoreFieldPreservation:
         sqlite_store.append(rec)
         got = sqlite_store.get("p:t:1")
         assert got.evidence_refs == ["ev1"]
+
+
+class TestSqliteStoreOrdering:
+    """`list_slot` in append order is a published contract, not a coincidence.
+
+    `Kernel.current_view()` folds the sequence into a dict keyed by `kind`, so
+    a later COMMIT supersedes an earlier one only if it arrives later. SQLite
+    supplies no order unless asked: `WHERE slot=?` can legally be served by
+    `idx_slot` (rowid order within the slot) or by `idx_slot_kind_trace`
+    (kind order within the slot), and the two disagree. Dropping `idx_slot`
+    makes the planner take the choice it is free to take on its own.
+    """
+
+    @staticmethod
+    def _interleaved(store: SqliteStore) -> None:
+        # Kinds chosen so kind order and append order differ.
+        for rec_id, kind in (("p:t:1", "zeta"), ("p:t:2", "alpha"), ("p:t:3", "zeta")):
+            store.append(make_record(rec_id=rec_id, slot="percepts", kind=kind))
+
+    def test_list_slot_is_append_ordered_whichever_index_is_used(
+        self, sqlite_store: SqliteStore
+    ) -> None:
+        self._interleaved(sqlite_store)
+        sqlite_store._conn.execute("DROP INDEX idx_slot")
+
+        assert [r.id for r in sqlite_store.list_slot("percepts")] == [
+            "p:t:1", "p:t:2", "p:t:3",
+        ], "list_slot() returned index order, not the order records were appended"
+
+    def test_list_persistent_by_slot_is_append_ordered_whichever_index_is_used(
+        self, sqlite_store: SqliteStore
+    ) -> None:
+        for rec_id, kind in (("p:t:1", "zeta"), ("p:t:2", "alpha"), ("p:t:3", "zeta")):
+            sqlite_store.append(make_record(
+                rec_id=rec_id, slot="percepts", kind=kind, scope="persistent"))
+        sqlite_store._conn.execute("DROP INDEX idx_slot")
+
+        assert [r.id for r in sqlite_store.list_persistent(slot="percepts")] == [
+            "p:t:1", "p:t:2", "p:t:3",
+        ], "list_persistent() returned index order, not the order records were appended"
+
+    def test_list_by_status_is_append_ordered(self, sqlite_store: SqliteStore) -> None:
+        """No index makes this one diverge today; the `ORDER BY` keeps it that
+        way when one is added."""
+        self._interleaved(sqlite_store)
+
+        assert [r.id for r in sqlite_store.list_by_status("ACTIVE")] == [
+            "p:t:1", "p:t:2", "p:t:3",
+        ], "list_by_status() returned index order, not the order records were appended"

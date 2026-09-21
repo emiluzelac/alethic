@@ -10,11 +10,14 @@ These tests run against both implementations via the parametrized `store` and
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 import pytest
 
 from alethic.kernel import Kernel
 from alethic.schema import Provenance, Record
+from alethic.store_protocol import StoreProtocol
+from alethic.testing import store_conformance
 
 
 def _record(rec_id: str, kind: str, ts_ms: int, ttl_ms: int | None,
@@ -28,24 +31,22 @@ def _record(rec_id: str, kind: str, ts_ms: int, ttl_ms: int | None,
 
 
 class TestFindActiveByKindSkipsExpired:
-    def test_expired_record_does_not_shadow_a_live_one(self, store):
+    def test_expired_record_does_not_shadow_a_live_one(
+        self, store_factory: Callable[[], StoreProtocol]
+    ) -> None:
         """An expired record must not hide a fresh record of the same kind.
 
         The SQL path selected the oldest ACTIVE row, TTL-checked that single
         row, and returned None when it had expired — never looking at the live
         record behind it. The in-memory path kept scanning. Same inputs, two
         different answers.
+
+        store_conformance now carries this exact assertion (and the rest of
+        the StoreProtocol contract), so this test calls it rather than
+        re-asserting the same check inline — keeping one copy of the
+        assertion instead of two that could drift apart.
         """
-        now = int(time.time() * 1000)
-        expired = _record("percepts:t1:1", "charge", ts_ms=now - 10_000, ttl_ms=1)
-        fresh = _record("percepts:t1:2", "charge", ts_ms=now, ttl_ms=None)
-        store.append(expired)
-        store.append(fresh)
-
-        found = store.find_active_by_kind("percepts", "charge", "t1")
-
-        assert found is not None, "the live record was hidden by an expired one"
-        assert found.id == "percepts:t1:2"
+        store_conformance(store_factory)
 
     def test_all_expired_returns_none(self, store):
         now = int(time.time() * 1000)

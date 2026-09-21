@@ -2,13 +2,21 @@
 
 from importlib.metadata import PackageNotFoundError, version as _version
 
+from .context import ValidationContext
+from .decision import ActionDecision
 from .kernel import Kernel
-from .schema import Record, Provenance, Slot, WriteMode
+from .schema import Provenance, Record, RecordIdConflict, Slot, WriteMode
 from .store import MemoryStore
 from .store_protocol import StoreProtocol
 from .sqlite_store import SqliteStore
 from .permissions import PERMISSIONS, Role
-from .validators import EvidenceValidator, SymbolicValidator
+from .validators import (
+    ActionValidator,
+    BeliefValidator,
+    EvidenceValidator,
+    SymbolicValidator,
+    ValidationResult,
+)
 from .worker import Worker, BaseWorker
 from .orchestrator import Orchestrator, OrchestratorResult
 from .session import Session
@@ -21,8 +29,11 @@ except PackageNotFoundError:  # running from a source tree, not installed
     __version__ = "0.0.0.dev0"
 
 __all__ = [
+    "ActionDecision",
+    "ActionValidator",
     "AdaptiveWorker",
     "BaseWorker",
+    "BeliefValidator",
     "EvidenceValidator",
     "Kernel",
     "MemoryStore",
@@ -31,6 +42,7 @@ __all__ = [
     "PERMISSIONS",
     "Provenance",
     "Record",
+    "RecordIdConflict",
     "Role",
     "Session",
     "SimRule",
@@ -39,6 +51,8 @@ __all__ = [
     "SqliteStore",
     "StoreProtocol",
     "SymbolicValidator",
+    "ValidationContext",
+    "ValidationResult",
     "Worker",
     "WriteMode",
     "__version__",

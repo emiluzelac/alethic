@@ -1,16 +1,44 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, Literal, Protocol
 
+from .context import ValidationContext
+
+# severity is only meaningful when ok is False. "block" means the kernel
+# refuses. "review" means it refuses and the decision belongs to a person.
+# The kernel never interprets these beyond passing them back to the caller.
 @dataclass
 class ValidationResult:
     ok: bool
     code: str
     detail: str
     context: Dict[str, Any] = field(default_factory=dict)
+    marginal: bool = False
+    severity: Literal["block", "review"] = "block"
+
+
+class BeliefValidator(Protocol):
+    """A synchronous gate that must pass before a belief may be committed.
+
+    Implementations remain outside the kernel so they may use deterministic
+    rules, retrieval, an entailment model, or another domain-specific policy.
+    ``validator_id`` is recorded in successful validation evidence.
+    """
+
+    validator_id: str
+
+    def validate_belief_commit(
+        self,
+        belief_payload: Dict[str, Any],
+        percepts: Dict[str, Any],
+        context: ValidationContext,
+    ) -> ValidationResult:
+        ...
 
 class EvidenceValidator:
-    def validate_belief_commit(self, belief_payload: Dict[str, Any], percepts: Dict[str, Any]) -> ValidationResult:
+    validator_id = "structural_evidence"
+
+    def validate_belief_commit(self, belief_payload: Dict[str, Any], percepts: Dict[str, Any], context: ValidationContext) -> ValidationResult:
         depends = belief_payload.get("depends_on", [])
         for k in depends:
             p = percepts.get(k)
@@ -25,8 +53,28 @@ class EvidenceValidator:
                     f"Belief depends on conflicting percept: {k}", {"percept_key": k})
         return ValidationResult(True, "OK", "Belief evidence acceptable")
 
+class ActionValidator(Protocol):
+    """A synchronous gate that must pass before an action may be committed.
+
+    Implementations live outside the kernel. ``validator_id`` is recorded in
+    the validation evidence for every decision the chain contributes to.
+    """
+
+    validator_id: str
+
+    def validate_action(
+        self,
+        action: Dict[str, Any],
+        committed_beliefs: Dict[str, Any],
+        constraints: Dict[str, Any],
+        context: ValidationContext,
+    ) -> ValidationResult:
+        ...
+
 class SymbolicValidator:
-    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any], constraints: Dict[str, Any]) -> ValidationResult:
+    validator_id = "symbolic"
+
+    def validate_action(self, action: Dict[str, Any], committed_beliefs: Dict[str, Any], constraints: Dict[str, Any], context: ValidationContext) -> ValidationResult:
         for belief_name in action.get("requires_beliefs", []):
             belief = committed_beliefs.get(belief_name)
             if belief is None:

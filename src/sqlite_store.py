@@ -102,9 +102,17 @@ class SqliteStore:
             return rec
 
     def list_slot(self, slot: Slot) -> List[Record]:
+        # ORDER BY rowid, not "whatever the planner returns". Append order is
+        # part of StoreProtocol: Kernel.current_view() folds this sequence
+        # into a dict keyed by kind, so a later COMMIT supersedes an earlier
+        # one only if it arrives later. `WHERE slot=?` can be served by
+        # idx_slot (rowid order) or by idx_slot_kind_trace (kind order), both
+        # legal, and the two disagree -- so without this the record that wins
+        # is a planner decision. rowid is append order here: the table is not
+        # WITHOUT ROWID and records are never deleted.
         with self._lock:
             cur = self._conn.execute(
-                "SELECT * FROM records WHERE slot=?", (slot,))
+                "SELECT * FROM records WHERE slot=? ORDER BY rowid", (slot,))
             recs = [_row_to_rec(r) for r in cur.fetchall()]
             for r in recs:
                 self._check_ttl(r)
@@ -139,24 +147,33 @@ class SqliteStore:
 
     # ── Extended queries (beyond StoreProtocol) ──────────────────────
 
+    # These two return records in append order for the same reason list_slot
+    # does, and are ordered explicitly for the same reason: an append-only
+    # audit trail read back in an order the planner chose is not an audit
+    # trail. `list_persistent(slot=...)` has the identical exposure to
+    # list_slot today; `list_by_status` does not yet, and the ORDER BY keeps
+    # it that way the day an index on (status, ...) is added.
+
     def list_by_status(self, status: str) -> List[Record]:
-        """Return all records with the given status."""
+        """Return all records with the given status, in append order."""
         with self._lock:
             cur = self._conn.execute(
-                "SELECT * FROM records WHERE status=?", (status,))
+                "SELECT * FROM records WHERE status=? ORDER BY rowid", (status,))
             return [_row_to_rec(r) for r in cur.fetchall()]
 
     def list_persistent(self, slot: Optional[str] = None) -> List[Record]:
-        """Return all persistent-scope records, optionally filtered by slot."""
+        """Return all persistent-scope records in append order, optionally
+        filtered by slot."""
         with self._lock:
             if slot:
                 cur = self._conn.execute(
-                    "SELECT * FROM records WHERE scope='persistent' AND slot=?",
+                    "SELECT * FROM records WHERE scope='persistent' AND slot=? "
+                    "ORDER BY rowid",
                     (slot,),
                 )
             else:
                 cur = self._conn.execute(
-                    "SELECT * FROM records WHERE scope='persistent'")
+                    "SELECT * FROM records WHERE scope='persistent' ORDER BY rowid")
             recs = [_row_to_rec(r) for r in cur.fetchall()]
             for r in recs:
                 self._check_ttl(r)
