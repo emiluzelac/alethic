@@ -50,6 +50,14 @@ Be respectful, inclusive, and professional. We're building trust in AI systems t
    git push origin feature/your-feature-name
    ```
 
+## Where a pull request lands
+
+This GitHub repository is a mirror. Since 2026-11-15 the maintainer's canonical
+repository is private and copies every change here, so a pull request is not
+merged on GitHub: once it is reviewed and its checks pass, the maintainer
+applies it to the canonical repository (your authorship is kept) and the mirror
+brings it to `main` here, which closes the pull request.
+
 ## Pull Request Guidelines
 
 - **Title**: Concise, descriptive (e.g., "Add belief TTL validation", "Fix SimulatorWorker condition parsing")

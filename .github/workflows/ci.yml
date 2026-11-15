@@ -1,8 +1,13 @@
 name: CI
 
+# Pull requests opened on GitHub only. Since 2026-11-15 Alethic's canonical
+# repository and its CI are on our own (private) Forgejo
+# (.forgejo/workflows/ci.yml), which mirrors every push here; this keeps the
+# checks for an outside contributor's pull request, on GitHub-hosted runners
+# (a public repository never runs on the estate's machines). An accepted
+# change lands through Forgejo, and the mirror brings it here.
+
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main, develop]
 

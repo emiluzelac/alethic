@@ -1,5 +1,10 @@
 name: Publish to PyPI
 
+# Publishes a v* tag through PyPI trusted publishing (environment `pypi`). Since
+# 2026-11-15 the tag is pushed to Alethic's canonical (private) Forgejo
+# repository and reaches this mirror through Forgejo's push mirror, which runs
+# this workflow as before; GitHub-hosted runners only.
+
 on:
   workflow_dispatch:
   push:

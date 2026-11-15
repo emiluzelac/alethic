@@ -1,0 +1,5 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Alethic's dependency updates: Renovate on our Forgejo since 2026-11-15, when Alethic's canonical repository moved there (GitHub is its mirror, where v* tags publish to PyPI). Estate defaults come from the preset emiluzelac/renovate-config. Everything waits for review: pyproject.toml's ranges are what every installer of alethic-kernel resolves, so they move on purpose, never by themselves.",
+  "rangeStrategy": "widen"
+}
