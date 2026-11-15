@@ -2,9 +2,9 @@ name: CI
 
 # Runs in a disposable VM on the estate's CI host. Since 2026-11-15 Alethic's
 # canonical repository is on our own (private) Forgejo, which mirrors every
-# push to github.com/emiluzelac/alethic, the public face, where a v* tag
-# publishes to PyPI (.github/workflows/publish.yml, trusted publishing). These
-# are the same checks as GitHub's CI. The Python images carry no Node for
+# push to github.com/emiluzelac/alethic, the public face. A v* tag publishes
+# to PyPI from publish.yml here, on Forgejo. These are the same checks as
+# GitHub's pull-request CI. The Python images carry no Node for
 # actions/checkout, so each job checks out with git and its own token.
 
 on:

@@ -54,9 +54,17 @@ Be respectful, inclusive, and professional. We're building trust in AI systems t
 
 This GitHub repository is a mirror. Since 2026-11-15 the maintainer's canonical
 repository is private and copies every change here, so a pull request is not
-merged on GitHub: once it is reviewed and its checks pass, the maintainer
-applies it to the canonical repository (your authorship is kept) and the mirror
-brings it to `main` here, which closes the pull request.
+merged on GitHub: once it is reviewed, the maintainer runs its checks and
+applies it to the canonical repository (your authorship is kept), and the
+mirror brings it to `main` here, which closes the pull request.
+
+## Releases
+
+Releases are published from the canonical repository, not from GitHub: the
+maintainer sets the version in `pyproject.toml`, adds its `CHANGELOG.md`
+section and pushes a `v<version>` tag there, whose workflow tests, builds and
+uploads the distributions to [PyPI](https://pypi.org/project/alethic-kernel/).
+The tag reaches this repository through the mirror.
 
 ## Pull Request Guidelines
 
