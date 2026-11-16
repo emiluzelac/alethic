@@ -37,7 +37,7 @@ jobs:
     name: Test, build and publish
     runs-on: [self-hosted, linux, x64, iam-ci-isolated]
     timeout-minutes: 30
-    container: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
+    container: python:3.15-bookworm@sha256:6f060cab421d9509c6c6a6a7762c651baf03c3f1d0145befe16b688762b7fe81
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       PUBLISH: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
