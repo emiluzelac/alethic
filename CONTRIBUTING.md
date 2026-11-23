@@ -2,6 +2,17 @@
 
 Thank you for your interest in contributing to Alethic! We welcome contributions, feedback, and ideas from the community.
 
+## Start here
+
+Browse [focused starter issues](https://github.com/emiluzelac/alethic/labels/good%20first%20issue)
+or propose a small change to the [public issue tracker](https://github.com/emiluzelac/alethic/issues).
+Good first contributions include a runnable custom validator example and a
+short tutorial showing how governed records survive a restart with the SQLite
+store. Use synthetic inputs and include the expected decision or output.
+
+Use [the private reporting form](https://github.com/emiluzelac/alethic/security/advisories/new)
+for suspected vulnerabilities. See the [security policy](SECURITY.md) for scope.
+
 ## Code of Conduct
 
 Be respectful, inclusive, and professional. We're building trust in AI systems together.

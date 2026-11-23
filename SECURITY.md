@@ -2,9 +2,8 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities through GitHub's private vulnerability
-reporting: go to the **Security** tab of this repository and choose **Report a
-vulnerability**.
+Report a suspected vulnerability through [GitHub's private vulnerability
+reporting form](https://github.com/emiluzelac/alethic/security/advisories/new).
 
 Please do not open a public issue for a security vulnerability.
 
@@ -18,7 +17,7 @@ Alethic is pre-1.0. Only the latest release receives security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.3.x   | ✅        |
+| 0.4.0   | ✅        |
 
 ## Scope and Known Limitations
 

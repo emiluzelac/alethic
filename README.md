@@ -1,6 +1,6 @@
 # Alethic
 
-**A governed cognitive substrate for AI systems.**
+**Govern evidence, state, and actions for AI systems.**
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18691808.svg)](https://doi.org/10.5281/zenodo.18691808)
 
@@ -10,6 +10,14 @@ Alethic places a small, enforceable kernel between reasoning components and
 external effects. It maintains typed state, links beliefs to evidence, applies
 declarative constraints, and records why each proposal was committed or
 invalidated. The kernel contains no model, prompt, tool, task, or domain logic.
+
+## Alethic Kernel and Guard
+
+Use the kernel as a standalone Python library to evaluate proposals inside a
+trusted application. [Alethic Guard](https://github.com/emiluzelac/alethic-guard)
+uses the kernel for mediated approvals and adds host-side isolation and recovery
+for enrolled workloads on supported Ubuntu/KVM hosts. [Explore both projects and
+try the live kernel demo](https://alethic.dev/).
 
 ## Install
 
